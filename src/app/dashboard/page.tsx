@@ -15,7 +15,8 @@ import Typography from "@mui/material/Typography";
 import CircularProgress from "@mui/material/CircularProgress";
 
 import { useLogoutMutation } from "../../store/authApi";
-
+import LottieAnimation from "../../components/common/lottie-animation/LottieAnimation";
+import animationData from "../../../public/lotties/Loadingcircles.json";
 const DashboardPage: React.FC = (): JSX.Element => {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,6 +85,7 @@ const DashboardPage: React.FC = (): JSX.Element => {
               Logout failed. Please try again.
             </Alert>
           )}
+
           <Button
             color="inherit"
             onClick={handleLogout}
@@ -97,7 +99,7 @@ const DashboardPage: React.FC = (): JSX.Element => {
           </Button>
         </Toolbar>
       </AppBar>
-
+      <LottieAnimation animationData={animationData} />
       <Box sx={{ p: 6 }}>
         <Typography variant="h4" gutterBottom>
           Welcome, {profile?.first_name} {profile?.last_name}!
