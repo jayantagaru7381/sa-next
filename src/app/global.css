@@ -1,0 +1,256 @@
+@layer theme, base, mui, components, utilities;
+
+/** **************************************
+ * Fonts: app
+ *************************************** */
+@import '@fontsource-variable/inter';
+
+@import '@fontsource/barlow/400.css';
+@import '@fontsource/barlow/500.css';
+@import '@fontsource/barlow/600.css';
+@import '@fontsource/barlow/700.css';
+@import '@fontsource/barlow/800.css';
+
+/** **************************************
+ * Fonts: options
+ *************************************** */
+@import '@fontsource-variable/dm-sans';
+@import '@fontsource-variable/nunito-sans';
+
+/** **************************************
+ * Plugins
+ *************************************** */
+@import "tailwindcss";
+
+/** **************************************
+ * Baseline
+ *************************************** */
+html {
+  height: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+body,
+#root,
+#root__layout {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 100%;
+  background-color: #F4F6F8;
+  flex-direction: column;
+}
+img {
+  max-width: 100%;
+  vertical-align: middle;
+}
+ul {
+  margin: 0;
+  padding: 0;
+  list-style-type: none;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: none;
+}
+input[type='number']::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+input[type='number']::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+/* Global header background fix */
+header {
+  background-color: #F4F6F8 !important;
+}
+
+/** **************************************
+ * CSS Variables
+ *************************************** */
+:root {
+  --alert-radius: 8px;
+  --swap-lighter-darker-error: #FAD7DB;
+  
+  /* Primary Colors */
+  --color-primary-main: #0067FF;
+  --color-primary-light: #3387FF;
+  --color-primary-dark: #0056D2;
+  --color-primary-lighter: #E6F0FF;
+  --color-primary-darker: #0052CC;
+  --color-primary-24: #0067ff3d;
+
+  /* Secondary Colors */
+  --color-secondary-main: #ff9800;
+  --color-secondary-light: #ffb74d;
+  --color-secondary-dark: #f57c00;
+  --color-secondary-lighter: #fff3e0;
+  --color-secondary-darker: #e65100;
+  --color-secondary-24: #ff98003d;
+
+  /* Info Colors */
+  --color-info-main: #17a2b8;
+  --color-info-light: #8ed3da;
+  --color-info-dark: #128293;
+  --color-info-lighter: #d2eff2;
+  --color-info-darker: #0b515b;
+  --color-info-24: #17a2b83d;
+
+  /* Success Colors */
+  --color-success-main: #28a745;
+  --color-success-light: #8ed39a;
+  --color-success-dark: #1e8236;
+  --color-success-lighter: #d2eecc;
+  --color-success-darker: #145722;
+  --color-success-24: #28a7453d;
+
+  /* Warning Colors */
+  --color-warning-main: #ffd100;
+  --color-warning-light: #ffe633;
+  --color-warning-dark: #ccaa00;
+  --color-warning-lighter: #fff8b3;
+  --color-warning-darker: #806b00;
+  --color-warning-24: #ffd1003d;
+
+  /* Error Colors */
+  --color-error-main: #dc3545;
+  --color-error-light: #f1979f;
+  --color-error-dark: #b02b37;
+  --color-error-lighter: #fad7db;
+  --color-error-darker: #741d24;
+  --color-error-24: #ff56303d;
+
+  /* Grey Scale */
+  --color-grey-100: #f9fafb;
+  --color-grey-200: #f4f6f8;
+  --color-grey-300: #dfe3e8;
+  --color-grey-400: #c4cdd5;
+  --color-grey-500: #919eab;
+  --color-grey-600: #637381;
+  --color-grey-700: #454f5b;
+  --color-grey-800: #1c252e;
+  --color-grey-900: #141a21;
+  --color-grey-8: #919eab14;
+
+  /* Text Colors */
+  --color-text-primary: #1c252e;
+  --color-text-secondary: #637381;
+  --color-text-disabled: #919eab;
+
+  /* Background Colors */
+  --color-background-default: #ffffff;
+  --color-background-paper: #ffffff;
+
+  /* Border Colors */
+  --color-border-outlined: #919eab29;
+
+  /* Shadow Colors */
+  --shadow-card: 0px 8px 16px 0px rgba(145, 158, 171, 0.08);
+  --shadow-dropdown: 0px 0px 2px 0px rgba(145, 158, 171, 0.08);
+  --shadow-dialog: 0px 12px 24px -4px rgba(145, 158, 171, 0.08);
+  --shadow-card-hover: 0px 16px 32px -4px rgba(145, 158, 171, 0.08);
+}
+
+/* Dark mode support (if needed in the future) */
+[data-color-scheme="dark"] {
+  /* Add dark mode color overrides here when needed */
+}
+
+/* Utility classes for color tokens */
+/* Primary Colors */
+.text-primary-main { color: var(--color-primary-main); }
+.text-primary-light { color: var(--color-primary-light); }
+.text-primary-dark { color: var(--color-primary-dark); }
+.text-primary-lighter { color: var(--color-primary-lighter); }
+.text-primary-darker { color: var(--color-primary-darker); }
+
+.bg-primary-main { background-color: var(--color-primary-main); }
+.bg-primary-light { background-color: var(--color-primary-light); }
+.bg-primary-dark { background-color: var(--color-primary-dark); }
+.bg-primary-lighter { background-color: var(--color-primary-lighter); }
+.bg-primary-darker { background-color: var(--color-primary-darker); }
+
+/* Secondary Colors */
+.text-secondary-main { color: var(--color-secondary-main); }
+.text-secondary-light { color: var(--color-secondary-light); }
+.text-secondary-dark { color: var(--color-secondary-dark); }
+.text-secondary-lighter { color: var(--color-secondary-lighter); }
+.text-secondary-darker { color: var(--color-secondary-darker); }
+
+.bg-secondary-main { background-color: var(--color-secondary-main); }
+.bg-secondary-light { background-color: var(--color-secondary-light); }
+.bg-secondary-dark { background-color: var(--color-secondary-dark); }
+.bg-secondary-lighter { background-color: var(--color-secondary-lighter); }
+.bg-secondary-darker { background-color: var(--color-secondary-darker); }
+
+/* Info Colors */
+.text-info-main { color: var(--color-info-main); }
+.text-info-light { color: var(--color-info-light); }
+.text-info-dark { color: var(--color-info-dark); }
+.text-info-lighter { color: var(--color-info-lighter); }
+.text-info-darker { color: var(--color-info-darker); }
+
+.bg-info-main { background-color: var(--color-info-main); }
+.bg-info-light { background-color: var(--color-info-light); }
+.bg-info-dark { background-color: var(--color-info-dark); }
+.bg-info-lighter { background-color: var(--color-info-lighter); }
+.bg-info-darker { background-color: var(--color-info-darker); }
+
+/* Success Colors */
+.text-success-main { color: var(--color-success-main); }
+.text-success-light { color: var(--color-success-light); }
+.text-success-dark { color: var(--color-success-dark); }
+.text-success-lighter { color: var(--color-success-lighter); }
+.text-success-darker { color: var(--color-success-darker); }
+
+.bg-success-main { background-color: var(--color-success-main); }
+.bg-success-light { background-color: var(--color-success-light); }
+.bg-success-dark { background-color: var(--color-success-dark); }
+.bg-success-lighter { background-color: var(--color-success-lighter); }
+.bg-success-darker { background-color: var(--color-success-darker); }
+
+/* Warning Colors */
+.text-warning-main { color: var(--color-warning-main); }
+.text-warning-light { color: var(--color-warning-light); }
+.text-warning-dark { color: var(--color-warning-dark); }
+.text-warning-lighter { color: var(--color-warning-lighter); }
+.text-warning-darker { color: var(--color-warning-darker); }
+
+.bg-warning-main { background-color: var(--color-warning-main); }
+.bg-warning-light { background-color: var(--color-warning-light); }
+.bg-warning-dark { background-color: var(--color-warning-dark); }
+.bg-warning-lighter { background-color: var(--color-warning-lighter); }
+.bg-warning-darker { background-color: var(--color-warning-darker); }
+
+/* Error Colors */
+.text-error-main { color: var(--color-error-main); }
+.text-error-light { color: var(--color-error-light); }
+.text-error-dark { color: var(--color-error-dark); }
+.text-error-lighter { color: var(--color-error-lighter); }
+.text-error-darker { color: var(--color-error-darker); }
+
+.bg-error-main { background-color: var(--color-error-main); }
+.bg-error-light { background-color: var(--color-error-light); }
+.bg-error-dark { background-color: var(--color-error-dark); }
+.bg-error-lighter { background-color: var(--color-error-lighter); }
+.bg-error-darker { background-color: var(--color-error-darker); }
+
+/* Grey Scale */
+.text-grey-100 { color: var(--color-grey-100); }
+.text-grey-200 { color: var(--color-grey-200); }
+.text-grey-300 { color: var(--color-grey-300); }
+.text-grey-400 { color: var(--color-grey-400); }
+.text-grey-500 { color: var(--color-grey-500); }
+.text-grey-600 { color: var(--color-grey-600); }
+.text-grey-700 { color: var(--color-grey-700); }
+.text-grey-800 { color: var(--color-grey-800); }
+.text-grey-900 { color: var(--color-grey-900); }
+
+.bg-grey-100 { background-color: var(--color-grey-100); }
+.bg-grey-200 { background-color: var(--color-grey-200); }
+.bg-grey-300 { background-color: var(--color-grey-300); }
+.bg-grey-400 { background-color: var(--color-grey-400); }
+.bg-grey-500 { background-color: var(--color-grey-500); }
+.bg-grey-600 { background-color: var(--color-grey-600); }
+.bg-grey-700 { background-color: var(--color-grey-700); }
+.bg-grey-800 { background-color: var(--color-grey-800); }
+.bg-grey-900 { background-color: var(--color-grey-900); }

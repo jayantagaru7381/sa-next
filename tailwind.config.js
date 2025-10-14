@@ -1,0 +1,161 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    './src/**/*.{js,ts,jsx,tsx}',
+  ],
+  theme: {
+    extend: {
+      colors: {
+        // Primary colors with nested structure for Tailwind utilities
+        primary: {
+          50: '#E6F0FF',
+          100: '#d6e5ff',
+          200: '#adcbff',
+          300: '#84b1ff',
+          400: '#5b97ff',
+          500: '#0067FF',
+          600: '#0056D2',
+          700: '#0052CC',
+          800: '#002766',
+          900: '#001333',
+          DEFAULT: '#0067FF',
+          hover: '#0056D2',
+          light: '#3387FF',
+          dark: '#0056D2',
+          lighter: '#E6F0FF',
+          darker: '#0052CC',
+        },
+        
+        // Secondary colors with nested structure
+        secondary: {
+          50: '#fff3e0',
+          100: '#ffe6cc',
+          200: '#ffcc99',
+          300: '#ffb366',
+          400: '#ff9933',
+          500: '#ff9800',
+          600: '#f57c00',
+          700: '#e65100',
+          800: '#cc6600',
+          900: '#995000',
+          DEFAULT: '#ff9800',
+          hover: '#f57c00',
+          light: '#ffb74d',
+          dark: '#e65100',
+          lighter: '#fff3e0',
+          darker: '#e65100',
+        },
+
+        // Info colors
+        info: {
+          50: '#d2eff2',
+          100: '#a5dfe5',
+          200: '#78cfd8',
+          300: '#4bbfcb',
+          400: '#1eafbe',
+          500: '#17a2b8',
+          600: '#128293',
+          700: '#0b515b',
+          800: '#084043',
+          900: '#042f2b',
+          DEFAULT: '#17a2b8',
+          light: '#8ed3da',
+          dark: '#0b515b',
+          lighter: '#d2eff2',
+          darker: '#0b515b',
+        },
+
+        // Success colors
+        success: {
+          50: '#d2eecc',
+          100: '#a5dd99',
+          200: '#78cc66',
+          300: '#4bbb33',
+          400: '#1eaa00',
+          500: '#28a745',
+          600: '#1e8236',
+          700: '#145722',
+          800: '#0a2c0e',
+          900: '#051605',
+          DEFAULT: '#28a745',
+          light: '#8ed39a',
+          dark: '#145722',
+          lighter: '#d2eecc',
+          darker: '#145722',
+        },
+
+        // Warning colors
+        warning: {
+          50: '#fff8b3',
+          100: '#fff166',
+          200: '#ffea19',
+          300: '#ffe300',
+          400: '#ffd100',
+          500: '#ffd100',
+          600: '#ccaa00',
+          700: '#806b00',
+          800: '#4d4000',
+          900: '#1a1500',
+          DEFAULT: '#ffd100',
+          light: '#ffe633',
+          dark: '#806b00',
+          lighter: '#fff8b3',
+          darker: '#806b00',
+        },
+        
+        // Error colors with nested structure
+        error: {
+          50: '#fad7db',
+          100: '#f5b0b8',
+          200: '#f08995',
+          300: '#eb6272',
+          400: '#e63b4f',
+          500: '#dc3545',
+          600: '#b02b37',
+          700: '#741d24',
+          800: '#4a1317',
+          900: '#20090a',
+          DEFAULT: '#dc3545',
+          light: '#f1979f',
+          dark: '#741d24',
+          lighter: '#fad7db',
+          darker: '#741d24',
+        },
+
+        // Grey scale
+        grey: {
+          50: '#f9fafb',
+          100: '#f9fafb',
+          200: '#f4f6f8',
+          300: '#dfe3e8',
+          400: '#c4cdd5',
+          500: '#919eab',
+          600: '#637381',
+          700: '#454f5b',
+          800: '#1c252e',
+          900: '#141a21',
+          DEFAULT: '#919eab',
+        },
+      },
+      fontFamily: {
+        'inter': ['Inter', 'sans-serif'],
+        'barlow': ['Barlow', 'sans-serif'],
+      },
+      boxShadow: {
+        'card': '0px 8px 16px 0px rgba(145, 158, 171, 0.08)',
+        'dropdown': '0px 0px 2px 0px rgba(145, 158, 171, 0.08)',
+        'dialog': '0px 12px 24px -4px rgba(145, 158, 171, 0.08)',
+        'card-hover': '0px 16px 32px -4px rgba(145, 158, 171, 0.08)',
+      },
+      borderRadius: {
+        'lg': '8px',
+        'xl': '12px',
+      },
+      spacing: {
+        '18': '72px',
+        '88': '352px',
+      },
+    },
+  },
+  plugins: [],
+};

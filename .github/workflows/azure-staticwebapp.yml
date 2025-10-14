@@ -1,0 +1,1133 @@
+# Multi-environment deployment workflow for Azure Static Web Apps
+# Supports Dev (PR) and QA environments with proper separation
+#
+# Environments:
+# - Dev: Automatic deployment on PR creation to main (wb-overhaul)
+# - QA: Manual deployment from qa branch (wb-overhaul-qa)
+
+name: Multi-Environment Azure Static Web Apps Deployment
+
+on:
+  push:
+    branches: ["main", "qa"]
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    branches: ["main"]
+
+# Environment variables available to all jobs and steps in this workflow
+env:
+  APP_LOCATION: ${{ vars.APP_LOCATION || '/' }}
+  APP_ARTIFACT_LOCATION: ${{ vars.APP_ARTIFACT_LOCATION || 'out' }}
+  DEV_RESOURCE_NAME: ${{ vars.DEV_RESOURCE_NAME || 'wb-overhaul' }}
+  QA_RESOURCE_NAME: ${{ vars.QA_RESOURCE_NAME || 'wb-overhaul-qa' }}
+  NODE_VERSION: ${{ vars.NODE_VERSION || '20' }}
+  MAX_RETRIES: ${{ vars.MAX_RETRIES || '3' }}
+  RETRY_DELAY: ${{ vars.RETRY_DELAY || '10' }}
+  BUILD_TIMEOUT_MINUTES: ${{ vars.BUILD_TIMEOUT_MINUTES || '15' }}
+  DEPLOY_TIMEOUT_MINUTES: ${{ vars.DEPLOY_TIMEOUT_MINUTES || '10' }}
+  # Note: Deployment tokens are accessed directly from secrets context
+
+permissions:
+  contents: read
+
+jobs:
+  # Dev Environment Job - Automatic deployment for PRs
+  dev_environment:
+    permissions:
+      contents: read
+      pull-requests: write
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    name: Deploy to Dev Environment
+    timeout-minutes: 30 # Prevent hanging builds
+    concurrency:
+      group: dev-${{ github.event.pull_request.number }}
+      cancel-in-progress: true # Cancel old deploys for same PR
+    # Environment will be created later in GitHub settings
+    # environment: dev
+    steps:
+      - name: 📊 Log deployment context
+        run: |
+          echo "====================================="
+          echo "🚀 QA PREVIEW DEPLOYMENT STARTING"
+          echo "====================================="
+          echo "📝 PR Number: #${{ github.event.pull_request.number }}"
+          echo "🔀 Source Branch: ${{ github.head_ref }}"
+          echo "🎯 Target Branch: ${{ github.base_ref }}"
+          echo "👤 Triggered by: ${{ github.actor }}"
+          echo "🔗 Commit SHA: ${{ github.sha }}"
+          echo "⏰ Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "🏃 Run ID: ${{ github.run_id }}"
+          echo "🔢 Run Number: ${{ github.run_number }}"
+          echo "====================================="
+
+      - name: 🔍 Validate environment
+        run: |
+          echo "Validating deployment prerequisites..."
+
+          # Check for deployment token
+          if [ -z "${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}" ]; then
+            echo "❌ ERROR: AZURE_STATIC_WEB_APPS_API_TOKEN is not configured"
+            echo "Please add the deployment token to repository secrets"
+            echo "See: https://docs.microsoft.com/azure/static-web-apps/deployment-token-management"
+            exit 1
+          fi
+          echo "✅ Deployment token is configured"
+
+          # Log GitHub context
+          echo "📋 GitHub Context:"
+          echo "  Repository: ${{ github.repository }}"
+          echo "  Event: ${{ github.event_name }}"
+          echo "  Action: ${{ github.event.action }}"
+
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0 # Full history for better logging
+        timeout-minutes: 5
+
+      - name: 📊 Analyze code changes
+        run: |
+          echo "📈 Code change analysis:"
+          echo "  Changed files: $(git diff --name-only origin/${{ github.base_ref }}...${{ github.sha }} | wc -l)"
+          echo "  Additions: $(git diff --stat origin/${{ github.base_ref }}...${{ github.sha }} | tail -1 | grep -oE '[0-9]+ insertion' || echo '0 insertions')"
+          echo "  Deletions: $(git diff --stat origin/${{ github.base_ref }}...${{ github.sha }} | tail -1 | grep -oE '[0-9]+ deletion' || echo '0 deletions')"
+
+          # Check for critical files
+          if git diff --name-only origin/${{ github.base_ref }}...${{ github.sha }} | grep -E "(package-lock\.json|package\.json)"; then
+            echo "⚠️ Dependencies changed - clean install required"
+            echo "CLEAN_INSTALL=true" >> $GITHUB_ENV
+          fi
+
+      - name: 📦 Setup Node.js with caching
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+        id: node-setup
+
+      - name: 📊 Log Node.js environment
+        run: |
+          echo "Node.js Environment:"
+          echo "  Node version: $(node --version)"
+          echo "  NPM version: $(npm --version)"
+          echo "  Cache hit: ${{ steps.node-setup.outputs.cache-hit || 'false' }}"
+          echo "  Working directory: $(pwd)"
+          echo "  Available disk space: $(df -h . | tail -1 | awk '{print $4}')"
+
+      - name: 📥 Install dependencies with retry
+        run: |
+          echo "📦 Installing dependencies..."
+          START_TIME=$(date +%s)
+
+          # Retry logic for npm install
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if [ "${{ env.CLEAN_INSTALL }}" == "true" ]; then
+              echo "🧹 Performing clean install (dependencies changed)..."
+              rm -rf node_modules package-lock.json
+              npm install && break
+            else
+              npm ci && break
+            fi
+            
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "⚠️ npm install failed. Retry $RETRY_COUNT of $MAX_RETRIES..."
+            
+            # Clear npm cache on failure
+            if [ $RETRY_COUNT -eq 2 ]; then
+              echo "🧹 Clearing npm cache..."
+              npm cache clean --force
+            fi
+            
+            sleep 5
+          done
+
+          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+            echo "❌ Failed to install dependencies after $MAX_RETRIES attempts"
+            exit 1
+          fi
+
+          END_TIME=$(date +%s)
+          echo "✅ Dependencies installed in $((END_TIME - START_TIME)) seconds"
+          echo "📊 node_modules size: $(du -sh node_modules | cut -f1)"
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+
+      - name: 🔧 Run quality checks and collect metrics
+        id: quality-metrics
+        run: |
+          echo "🔍 Running comprehensive quality checks..."
+
+          # Create quality metrics directory
+          mkdir -p quality-reports
+
+          # Initialize build start time for performance tracking
+          echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+          # Run quality metrics collection
+          npm run quality:collect || {
+            echo "⚠️ Some quality checks failed, but continuing with build"
+            # Create empty metrics file as fallback
+            echo '{}' > quality-metrics.json
+          }
+
+          # Generate GitHub Actions outputs
+          if [ -f "quality-metrics.json" ]; then
+            echo "📊 Generating GitHub Actions outputs..."
+            node scripts/format-github-output.js outputs > quality-outputs.txt
+            
+            # Set outputs for later steps
+            while IFS='=' read -r key value; do
+              echo "${key}=${value}" >> $GITHUB_OUTPUT
+            done < quality-outputs.txt
+            
+            # Display summary in logs
+            node scripts/format-github-output.js summary
+          else
+            echo "⚠️ Quality metrics not available, using defaults"
+            echo "quality_status=error" >> $GITHUB_OUTPUT
+            echo "quality_score=0" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: 📤 Upload Quality Metrics Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-metrics-${{ github.run_id }}
+          path: |
+            quality-metrics.json
+            quality-reports/
+          retention-days: 7
+
+      - name: 🔨 Build Next.js app with enhanced metrics
+        id: build
+        run: |
+          echo "🏗️ Starting build process..."
+          echo "Build configuration:"
+          echo "  - Environment: dev"
+          echo "  - Node ENV: ${NODE_ENV:-development}"
+          echo "  - PR Number: ${{ github.event.pull_request.number }}"
+          echo "  - Memory limit: $(node -e 'console.log(v8.getHeapStatistics().heap_size_limit/(1024*1024))')MB"
+
+          START_TIME=$(date +%s)
+
+          # Build with increased memory if needed
+          export NODE_OPTIONS="--max-old-space-size=4096"
+          export NEXT_PUBLIC_API_BASE="${{ vars.DEV_CONTAINER_APPS_DIRECT_URL }}"
+          export BUILD_FOR_SWA=true
+          npm run build
+
+          BUILD_EXIT_CODE=$?
+          END_TIME=$(date +%s)
+          BUILD_DURATION=$((END_TIME - START_TIME))
+
+          # Set build outputs
+          echo "build_duration=${BUILD_DURATION}" >> $GITHUB_OUTPUT
+          echo "build_status=$([ $BUILD_EXIT_CODE -eq 0 ] && echo 'success' || echo 'failed')" >> $GITHUB_OUTPUT
+
+          if [ $BUILD_EXIT_CODE -ne 0 ]; then
+            echo "❌ Build failed with exit code $BUILD_EXIT_CODE"
+            echo "📋 Last 50 lines of build output above may contain error details"
+            exit $BUILD_EXIT_CODE
+          fi
+
+          echo "✅ Build completed in ${BUILD_DURATION} seconds"
+
+          # Verify build output
+          if [ ! -d "out" ]; then
+            echo "❌ ERROR: Build output directory 'out' not found"
+            echo "This usually means the build succeeded but static export failed"
+            echo "Check next.config.ts for 'output: export' setting"
+            exit 1
+          fi
+
+          # Enhanced build statistics with metrics capture
+          BUILD_SIZE_BYTES=$(du -sb out | cut -f1)
+          BUILD_SIZE_MB=$(echo "scale=2; $BUILD_SIZE_BYTES / 1024 / 1024" | bc -l || echo "0")
+          HTML_COUNT=$(find out -name "*.html" | wc -l)
+          JS_COUNT=$(find out -name "*.js" | wc -l)
+          CSS_COUNT=$(find out -name "*.css" | wc -l)
+
+          echo "📊 Enhanced Build Statistics:"
+          echo "  Output size: ${BUILD_SIZE_MB}MB (${BUILD_SIZE_BYTES} bytes)"
+          echo "  HTML files: ${HTML_COUNT}"
+          echo "  JS chunks: ${JS_COUNT}"
+          echo "  CSS files: ${CSS_COUNT}"
+          echo "  Build duration: ${BUILD_DURATION}s"
+
+          # Set additional outputs for metrics
+          echo "build_size_mb=${BUILD_SIZE_MB}" >> $GITHUB_OUTPUT
+          echo "html_files=${HTML_COUNT}" >> $GITHUB_OUTPUT
+          echo "js_files=${JS_COUNT}" >> $GITHUB_OUTPUT
+          echo "css_files=${CSS_COUNT}" >> $GITHUB_OUTPUT
+
+          # Performance warnings
+          if [ "$(echo "$BUILD_SIZE_MB > 100" | bc -l 2>/dev/null || echo 0)" -eq 1 ]; then
+            echo "⚠️ WARNING: Build size is ${BUILD_SIZE_MB}MB, which may cause slow deployments"
+            echo "build_size_warning=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_size_warning=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $BUILD_DURATION -gt 300 ]; then
+            echo "⚠️ WARNING: Build took ${BUILD_DURATION}s, consider optimization"
+            echo "build_duration_warning=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_duration_warning=false" >> $GITHUB_OUTPUT
+          fi
+        timeout-minutes: ${{ fromJSON(vars.BUILD_TIMEOUT_MINUTES || '15') }}
+        env:
+          NEXT_PUBLIC_ENVIRONMENT: dev
+          NEXT_PUBLIC_PR_NUMBER: ${{ github.event.pull_request.number }}
+          NEXT_PUBLIC_DEPLOYMENT_ID: ${{ github.run_id }}
+
+      - name: 🚀 Deploy to Dev Environment
+        id: deploy
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          skip_app_build: true
+          skip_api_build: true
+          deployment_environment: "Dev"
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+        continue-on-error: true
+
+      - name: 🔄 Update bundle metrics post-build
+        if: always() && steps.build.outcome == 'success'
+        id: bundle-analysis
+        run: |
+          echo "🔄 Running post-build bundle analysis..."
+
+          # Run post-build bundle analysis
+          npm run quality:bundle || {
+            echo "⚠️ Bundle analysis failed, but continuing with deployment"
+            echo "bundle_analysis_status=failed" >> $GITHUB_OUTPUT
+          }
+
+          echo "bundle_analysis_status=success" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: 📋 Finalize quality metrics and deployment status
+        if: always()
+        id: deployment-status
+        run: |
+          # Update quality metrics with final build and deployment data
+          if [ -f "quality-metrics.json" ]; then
+            # Update performance metrics with final build data
+            BUILD_END_TIME=$(date +%s)
+            TOTAL_DURATION=$((BUILD_END_TIME - ${BUILD_START_TIME:-$BUILD_END_TIME}))
+            
+            # Create final metrics update
+            node -e "
+              const fs = require('fs');
+              const metrics = JSON.parse(fs.readFileSync('quality-metrics.json', 'utf8'));
+              metrics.performance = metrics.performance || {};
+              metrics.performance.totalDuration = $TOTAL_DURATION;
+              metrics.performance.buildDuration = '${{ steps.build.outputs.build_duration }}';
+              metrics.performance.deploymentStatus = '${{ steps.deploy.outcome }}';
+              metrics.performance.bundleAnalysisStatus = '${{ steps.bundle-analysis.outputs.bundle_analysis_status }}';
+              
+              // Bundle metrics should now be complete from post-build analysis
+              console.log('Bundle metrics status:', metrics.bundle?.status || 'unknown');
+              
+              fs.writeFileSync('quality-metrics.json', JSON.stringify(metrics, null, 2));
+            "
+          fi
+
+          if [ "${{ steps.deploy.outcome }}" == "success" ]; then
+            echo "====================================="
+            echo "✅ QA PREVIEW DEPLOYMENT SUCCESSFUL"
+            echo "====================================="
+            echo "🌐 Preview URL: ${{ steps.deploy.outputs.static_web_app_url }}"
+            echo "⏰ Deployed at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo "📊 Total pipeline duration: ${TOTAL_DURATION}s"
+            echo "====================================="
+            
+            # Set outputs for PR comment
+            echo "deployment_status=success" >> $GITHUB_OUTPUT
+            echo "dev_url=${{ steps.deploy.outputs.static_web_app_url }}" >> $GITHUB_OUTPUT
+          else
+            echo "====================================="
+            echo "❌ PREVIEW DEPLOYMENT FAILED"
+            echo "====================================="
+            echo "Error details:"
+            echo "  - Exit code: ${{ steps.deploy.outcome }}"
+            echo "  - Check Azure portal for detailed logs"
+            echo "  - Verify deployment token is valid"
+            echo "  - Check Azure service status: https://status.azure.com"
+            echo ""
+            echo "🔧 Troubleshooting steps:"
+            echo "  1. Validate token: az staticwebapp secrets list"
+            echo "  2. Check quota limits in Azure portal"
+            echo "  3. Review build output size (current: ${{ steps.build.outputs.build_size_mb }}MB)"
+            echo "====================================="
+            
+            echo "deployment_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: 💬 Update PR with comprehensive quality report
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ steps.deployment-status.outputs.deployment_status }}';
+            const url = '${{ steps.deployment-status.outputs.dev_url }}';
+            const sha = '${{ github.sha }}';
+            const shortSha = sha.substring(0, 7);
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+
+            let body;
+
+            // Generate comprehensive quality report comment
+            try {
+              if (fs.existsSync('quality-metrics.json')) {
+                // Use the formatter to generate the PR comment
+                const comment = execSync(
+                  `node scripts/format-github-output.js comment quality-metrics.json "${url}" "${{ github.head_ref }}" "${shortSha}" "${{ github.run_id }}" "${{ github.run_number }}"`
+                ).toString();
+                
+                body = comment;
+              } else {
+                // Fallback to basic comment if quality metrics are not available
+                if (status === 'success') {
+                  body = `### ✅ Your Preview Environment is Ready!
+                  
+                  🌐 **Preview your changes**: ${url}
+                  
+                  📋 **Deployment Details**
+                  🔀 **Branch**: \`${{ github.head_ref }}\`
+                  📦 **Commit**: \`${shortSha}\`
+                  ⏰ **Deployed**: ${new Date().toUTCString()}
+                  🏃 **Build**: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+                  
+                  ⚠️ **Quality Metrics**: Not available for this build
+                  
+                  ---
+                  <details>
+                  <summary>📊 Basic Deployment Details</summary>
+                  
+                  - **Environment**: Dev
+                  - **Azure Resource**: ${{ env.DEV_RESOURCE_NAME }}
+                  - **Node Version**: ${{ env.NODE_VERSION }}
+                  - **Build Duration**: ${{ steps.build.outputs.build_duration || 'Unknown' }}s
+                  - **Bundle Size**: ${{ steps.build.outputs.build_size_mb || 'Unknown' }}MB
+                  
+                  </details>`;
+                } else {
+                  body = `### ❌ Preview Environment Deployment Failed
+                  
+                  We encountered an issue deploying your preview environment.
+                  
+                  📋 **Error Details**:
+                  - Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details
+                  - Review Azure portal for service status
+                  - Quality metrics collection may have failed
+                  
+                  🔧 **Common issues**:
+                  - Build output missing or invalid
+                  - Quality checks failed (tests, linting, etc.)
+                  - Azure service temporary unavailability
+                  - Token expiration or misconfiguration
+                  
+                  🔄 **To retry**: Re-run the failed workflow from the Actions tab`;
+                }
+              }
+            } catch (error) {
+              console.log('Error generating quality report:', error.message);
+              // Fallback to basic deployment status
+              body = status === 'success' ? 
+                `### ✅ Your Preview Environment is Ready!\n\n🌐 **Preview your changes**: ${url}\n📦 **Commit**: \`${shortSha}\`\n⚠️ Quality report generation failed` :
+                `### ❌ Preview Environment Deployment Failed\n\nCheck workflow logs for details.`;
+            }
+
+            // Find and update existing comment or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            // Look for our custom deployment comment or Azure's default comment
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              (comment.body.includes('🌐 **Preview your changes**') || 
+               comment.body.includes('Quality Report') ||
+               comment.body.includes('stage site is ready') ||
+               comment.body.includes('Preview Environment'))
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: Notify Slack about Dev deployment
+        if: always()
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_API_TOKEN }}
+          payload: |
+            channel: ${{ secrets.FE_DEPLOYMENT_SLACK_CHANNEL_ID }}
+            blocks:
+              - type: divider
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: |
+                    <!here> FE Deployment: *${{ steps.deployment-status.outputs.deployment_status }}*
+                    
+                    🌐 URL: ${{ steps.deploy.outputs.static_web_app_url || 'N/A' }}
+                    
+                    🔀 Source Branch: `${{ github.head_ref }}`
+                    
+                    🎯 Target Branch: `${{ github.base_ref }}`
+                    
+                    👤 Triggered by: ${{ github.actor }}
+                    
+                    📦 Commit: `${{ github.sha }}`
+                    
+                    🔗 PR URL: ${{ github.event.pull_request.html_url || 'N/A' }}
+                    
+                    📊 Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              - type: divider
+
+  # Main Branch to Dev Environment - Direct pushes to main deploy to dev
+  main_to_dev:
+    permissions:
+      contents: read
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    name: Deploy Main to Dev Environment
+    timeout-minutes: 30
+    concurrency:
+      group: main-to-dev
+      cancel-in-progress: true
+    steps:
+      - name: 📊 Log main to dev deployment context
+        run: |
+          echo "====================================="
+          echo "🎯 MAIN TO DEV DEPLOYMENT STARTING"
+          echo "====================================="
+          echo "🔀 Branch: ${{ github.ref_name }}"
+          echo "👤 Triggered by: ${{ github.actor }}"
+          echo "🔗 Commit SHA: ${{ github.sha }}"
+          echo "📅 Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "🎬 Trigger: Direct push to main branch"
+          echo "====================================="
+
+      - name: 🔍 Validate dev deployment prerequisites
+        run: |
+          echo "Validating dev deployment prerequisites..."
+
+          if [ -z "${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}" ]; then
+            echo "❌ ERROR: AZURE_STATIC_WEB_APPS_API_TOKEN is not configured"
+            echo "Please add the dev deployment token to repository secrets"
+            exit 1
+          fi
+          echo "✅ Dev deployment token is configured"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+        timeout-minutes: 5
+
+      - name: 🔍 Check for deployment token
+        if: success()
+        run: |
+          echo "Checking deployment prerequisites..."
+          if [ -z "${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}" ]; then
+            echo "❌ Missing deployment token"
+            exit 1
+          fi
+          echo "✅ Deployment token found"
+
+      - name: 🏗️ Setup Node.js environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+        timeout-minutes: 5
+
+      - name: 📦 Install dependencies with retry
+        run: |
+          echo "🏗️ Starting dependency installation..."
+
+          for i in $(seq 1 ${{ env.MAX_RETRIES }}); do
+            if npm ci --prefer-offline --no-audit --progress=false; then
+              echo "✅ Dependencies installed successfully on attempt $i"
+              break
+            else
+              echo "❌ Installation failed on attempt $i"
+              if [ $i -eq ${{ env.MAX_RETRIES }} ]; then
+                echo "💥 All installation attempts failed"
+                exit 1
+              fi
+              echo "⏳ Waiting ${{ env.RETRY_DELAY }} seconds before retry..."
+              sleep ${{ env.RETRY_DELAY }}
+            fi
+          done
+
+      - name: 🏗️ Build application
+        run: |
+          echo "🏗️ Starting build process..."
+          export NODE_OPTIONS="--max-old-space-size=4096"
+          export NEXT_PUBLIC_API_BASE="${{ vars.DEV_CONTAINER_APP_URL }}"
+          BUILD_FOR_SWA=true npm run build
+          echo "✅ Build completed successfully"
+        env:
+          NEXT_PUBLIC_ENVIRONMENT: dev
+          NEXT_PUBLIC_DEPLOYMENT_ID: ${{ github.run_id }}
+          NEXT_PUBLIC_SOURCE: main_branch
+        timeout-minutes: ${{ fromJSON(env.BUILD_TIMEOUT_MINUTES) }}
+
+      - name: 🚀 Deploy to Azure Static Web Apps (Dev)
+        id: builddeploy
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          skip_app_build: true
+          skip_api_build: true
+        timeout-minutes: ${{ fromJSON(env.DEPLOY_TIMEOUT_MINUTES) }}
+
+      - name: 🎉 Deployment Success Summary
+        if: success()
+        run: |
+          echo "====================================="
+          echo "🎉 MAIN TO DEV DEPLOYMENT SUCCESSFUL"
+          echo "====================================="
+          echo "✅ Main branch successfully deployed to dev environment"
+          echo "🌐 Environment: Dev (${{ env.DEV_RESOURCE_NAME }})"
+          echo "🔗 Commit: ${{ github.sha }}"
+          echo "📅 Deployed at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "====================================="
+
+      - name: 💥 Deployment Failure Handling
+        if: failure()
+        run: |
+          echo "====================================="
+          echo "💥 MAIN TO DEV DEPLOYMENT FAILED"
+          echo "====================================="
+          echo "❌ Main branch deployment to dev environment failed"
+          echo "🔗 Commit: ${{ github.sha }}"
+          echo "📅 Failed at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "💡 Check the logs above for specific error details"
+          echo "====================================="
+          exit 1
+
+  # QA Environment Job - Automatic deployment from qa branch only
+  # For manual QA deployments with advanced features, use qa-deployment.yml workflow
+  qa_environment:
+    permissions:
+      contents: read
+      pull-requests: write
+    if: github.event_name == 'push' && github.ref == 'refs/heads/qa'
+    runs-on: ubuntu-latest
+    name: Deploy to QA Environment
+    timeout-minutes: 30
+    concurrency:
+      group: qa-deployment
+      cancel-in-progress: false # Don't cancel QA deployments
+    # Environment will be created later in GitHub settings
+    # environment: qa
+    steps:
+      - name: 📊 Log QA deployment context
+        run: |
+          echo "====================================="
+          echo "🎯 QA DEPLOYMENT STARTING"
+          echo "====================================="
+          echo "🔀 Branch: ${{ github.ref_name }}"
+          echo "👤 Triggered by: ${{ github.actor }}"
+          echo "🔗 Commit SHA: ${{ github.sha }}"
+          echo "📅 Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "🎬 Trigger: Automatic QA deployment"
+          echo "====================================="
+
+      - name: 🔍 Validate QA prerequisites
+        run: |
+          echo "Validating QA deployment prerequisites..."
+
+          # Check for QA deployment token
+          if [ -z "${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_QA }}" ]; then
+            echo "❌ ERROR: AZURE_STATIC_WEB_APPS_API_TOKEN_QA is not configured"
+            echo "Please add the QA deployment token to repository secrets"
+            exit 1
+          fi
+          echo "✅ QA deployment token is configured"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+        timeout-minutes: 5
+
+      - name: 🔍 Check QA branch status
+        if: github.ref == 'refs/heads/qa'
+        run: |
+          echo "📊 QA branch analysis:"
+
+          # Check if QA is behind main
+          git fetch origin main
+          BEHIND_COUNT=$(git rev-list --count HEAD..origin/main)
+
+          if [ $BEHIND_COUNT -gt 0 ]; then
+            echo "⚠️ WARNING: QA branch is $BEHIND_COUNT commits behind main"
+            echo "Consider merging main into QA for latest changes"
+          else
+            echo "✅ QA branch is up to date with main"
+          fi
+
+          # Show recent commits
+          echo ""
+          echo "📝 Recent commits on QA:"
+          git log --oneline -5
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: 📥 Install dependencies
+        run: |
+          echo "Installing dependencies for QA..."
+          npm ci
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+
+      - name: 📥 Download Quality Metrics Artifact
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: quality-metrics-${{ github.run_id }}
+          path: .
+        continue-on-error: true
+
+      - name: 🔧 Reuse and Enhance Quality Metrics for QA
+        id: qa-quality-metrics
+        run: |
+          echo "🔍 Enhancing existing quality metrics for QA deployment..."
+
+          # Initialize build start time for performance tracking
+          echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+          # Check if we have existing quality metrics from artifact
+          if [ -f "quality-metrics.json" ]; then
+            echo "✅ Reusing quality metrics from previous job (saves ~2-3 minutes)"
+            
+            # Add QA-specific metadata without re-running expensive checks
+            node -e "
+              const fs = require('fs');
+              const metrics = JSON.parse(fs.readFileSync('quality-metrics.json', 'utf8'));
+              metrics.environment = 'qa';
+              metrics.qa_deployment = {
+                timestamp: new Date().toISOString(),
+                job_id: '${{ github.run_id }}',
+                branch: '${{ github.ref_name }}'
+              };
+              fs.writeFileSync('quality-metrics.json', JSON.stringify(metrics, null, 2));
+              console.log('📊 QA-enhanced metrics prepared successfully');
+            "
+          else
+            echo "⚠️ No existing quality metrics found, running fresh collection..."
+            # Fallback: run quality collection only if artifact wasn't available
+            npm run quality:collect || {
+              echo "⚠️ Quality checks failed, creating empty metrics"
+              echo '{}' > quality-metrics.json
+            }
+          fi
+
+          # Generate GitHub Actions outputs for QA
+          if [ -f "quality-metrics.json" ]; then
+            echo "📊 Generating QA quality metrics outputs..."
+            node scripts/format-github-output.js outputs > qa-quality-outputs.txt
+            
+            # Set outputs for later steps
+            while IFS='=' read -r key value; do
+              echo "${key}=${value}" >> $GITHUB_OUTPUT
+            done < qa-quality-outputs.txt
+            
+            # Display QA quality summary in logs
+            echo "📊 QA Quality Metrics Summary:"
+            node scripts/format-github-output.js summary
+            
+            # Check if quality gates are met for QA deployment
+            QUALITY_STATUS=$(node -e "const m=require('./quality-metrics.json'); console.log(m.summary?.overall || 'failed')")
+            if [ "$QUALITY_STATUS" = "failed" ]; then
+              echo "⚠️ WARNING: Quality gates not met, but proceeding with QA deployment"
+              echo "QA environment allows deployments with quality gate failures for testing"
+            fi
+          else
+            echo "⚠️ Quality metrics not available for QA deployment"
+            echo "quality_status=error" >> $GITHUB_OUTPUT
+            echo "quality_score=0" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: 🔨 Build for QA Environment with enhanced metrics
+        id: qa-build
+        run: |
+          echo "Building for QA environment..."
+          START_TIME=$(date +%s)
+
+          # Build with enhanced monitoring
+          export NODE_OPTIONS="--max-old-space-size=4096"
+          export NEXT_PUBLIC_API_BASE="${{ vars.DEV_CONTAINER_APPS_DIRECT_URL }}"
+          export BUILD_FOR_SWA=true
+          npm run build
+
+          BUILD_EXIT_CODE=$?
+          END_TIME=$(date +%s)
+          BUILD_DURATION=$((END_TIME - START_TIME))
+
+          # Set QA build outputs
+          echo "qa_build_duration=${BUILD_DURATION}" >> $GITHUB_OUTPUT
+          echo "qa_build_status=$([ $BUILD_EXIT_CODE -eq 0 ] && echo 'success' || echo 'failed')" >> $GITHUB_OUTPUT
+
+          if [ $BUILD_EXIT_CODE -ne 0 ]; then
+            echo "❌ QA build failed with exit code $BUILD_EXIT_CODE"
+            exit $BUILD_EXIT_CODE
+          fi
+
+          echo "✅ QA build completed in ${BUILD_DURATION} seconds"
+
+          # Verify build output
+          if [ ! -d "out" ]; then
+            echo "❌ ERROR: QA build output directory 'out' not found"
+            exit 1
+          fi
+
+          # Enhanced QA build statistics
+          QA_BUILD_SIZE_BYTES=$(du -sb out | cut -f1)
+          QA_BUILD_SIZE_MB=$(echo "scale=2; $QA_BUILD_SIZE_BYTES / 1024 / 1024" | bc -l || echo "0")
+          QA_HTML_COUNT=$(find out -name "*.html" | wc -l)
+          QA_JS_COUNT=$(find out -name "*.js" | wc -l)
+          QA_CSS_COUNT=$(find out -name "*.css" | wc -l)
+
+          echo "📊 Enhanced QA Build Statistics:"
+          echo "  Output size: ${QA_BUILD_SIZE_MB}MB (${QA_BUILD_SIZE_BYTES} bytes)"
+          echo "  HTML files: ${QA_HTML_COUNT}"
+          echo "  JS chunks: ${QA_JS_COUNT}"
+          echo "  CSS files: ${QA_CSS_COUNT}"
+          echo "  Build duration: ${BUILD_DURATION}s"
+
+          # Set additional QA outputs for metrics
+          echo "qa_build_size_mb=${QA_BUILD_SIZE_MB}" >> $GITHUB_OUTPUT
+          echo "qa_html_files=${QA_HTML_COUNT}" >> $GITHUB_OUTPUT
+          echo "qa_js_files=${QA_JS_COUNT}" >> $GITHUB_OUTPUT
+          echo "qa_css_files=${QA_CSS_COUNT}" >> $GITHUB_OUTPUT
+
+          # QA Performance warnings
+          if [ "$(echo "$QA_BUILD_SIZE_MB > 100" | bc -l 2>/dev/null || echo 0)" -eq 1 ]; then
+            echo "⚠️ WARNING: QA build size is ${QA_BUILD_SIZE_MB}MB, monitor for performance impact"
+            echo "qa_build_size_warning=true" >> $GITHUB_OUTPUT
+          else
+            echo "qa_build_size_warning=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ $BUILD_DURATION -gt 300 ]; then
+            echo "⚠️ WARNING: QA build took ${BUILD_DURATION}s, consider optimization"
+            echo "qa_build_duration_warning=true" >> $GITHUB_OUTPUT
+          else
+            echo "qa_build_duration_warning=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          NODE_ENV: production # For optimized build
+          NEXT_PUBLIC_ENVIRONMENT: qa
+          NEXT_PUBLIC_BUILD_ID: ${{ github.sha }}
+        timeout-minutes: ${{ fromJSON(vars.BUILD_TIMEOUT_MINUTES || '15') }}
+
+      - name: 🚀 Deploy to QA Environment (wb-overhaul-qa)
+        id: deploy-qa
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_QA }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          skip_app_build: true
+          skip_api_build: true
+          # Removed deployment_environment to deploy to production slot
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+
+      - name: 🔄 Update QA bundle metrics post-build
+        if: always() && steps.qa-build.outcome == 'success'
+        id: qa-bundle-analysis
+        run: |
+          echo "🔄 Running QA post-build bundle analysis..."
+
+          # Run post-build bundle analysis for QA
+          npm run quality:bundle || {
+            echo "⚠️ QA bundle analysis failed, but continuing with deployment"
+            echo "qa_bundle_analysis_status=failed" >> $GITHUB_OUTPUT
+          }
+
+          echo "qa_bundle_analysis_status=success" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: 📋 Finalize QA quality metrics and deployment status
+        if: always()
+        id: qa-deployment-status
+        run: |
+          # Update QA quality metrics with final build and deployment data
+          if [ -f "quality-metrics.json" ]; then
+            # Update performance metrics with final QA build data
+            QA_BUILD_END_TIME=$(date +%s)
+            QA_TOTAL_DURATION=$((QA_BUILD_END_TIME - ${BUILD_START_TIME:-$QA_BUILD_END_TIME}))
+            echo "qa_total_duration=$QA_TOTAL_DURATION" >> $GITHUB_OUTPUT
+            
+            # Create final QA metrics update
+            node -e "
+              const fs = require('fs');
+              try {
+                const metrics = JSON.parse(fs.readFileSync('quality-metrics.json', 'utf8'));
+                metrics.performance = metrics.performance || {};
+                metrics.performance.totalDuration = $QA_TOTAL_DURATION;
+                metrics.performance.buildDuration = '${{ steps.qa-build.outputs.qa_build_duration }}';
+                metrics.performance.deploymentStatus = '${{ steps.deploy-qa.outcome }}';
+                metrics.performance.environment = 'qa';
+                metrics.performance.bundleAnalysisStatus = '${{ steps.qa-bundle-analysis.outputs.qa_bundle_analysis_status }}';
+                
+                // Bundle metrics should now be complete from post-build analysis
+                console.log('QA Bundle metrics status:', metrics.bundle?.status || 'unknown');
+                
+                fs.writeFileSync('quality-metrics.json', JSON.stringify(metrics, null, 2));
+                console.log('QA metrics updated successfully');
+              } catch (error) {
+                console.log('Warning: Could not update QA metrics:', error.message);
+              }
+            "
+          fi
+
+          if [ "${{ steps.deploy-qa.outcome }}" == "success" ]; then
+            echo "====================================="
+            echo "✅ QA DEPLOYMENT SUCCESSFUL"
+            echo "====================================="
+            echo "🌐 QA URL: ${{ vars.QA_URL || 'Check Azure portal' }}"
+            echo "📅 Deployed at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo "🔗 Commit: ${{ github.sha }}"
+            echo "📊 Total QA pipeline duration: ${QA_TOTAL_DURATION}s"
+            echo "📊 QA Build size: ${{ steps.qa-build.outputs.qa_build_size_mb }}MB"
+            echo ""
+            echo "📝 Next steps:"
+            echo "  1. Verify deployment at QA URL"
+            echo "  2. Run smoke tests"
+            echo "  3. Review quality metrics in workflow logs"
+            echo "  4. Notify QA team"
+            echo "====================================="
+            
+            # Generate QA quality summary for logs
+            if [ -f "quality-metrics.json" ]; then
+              echo ""
+              echo "📊 QA QUALITY METRICS FINAL SUMMARY:"
+              node scripts/format-github-output.js summary
+            fi
+            
+            echo "qa_deployment_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "====================================="
+            echo "❌ QA DEPLOYMENT FAILED"
+            echo "====================================="
+            echo "Error details:"
+            echo "  - Deployment outcome: ${{ steps.deploy-qa.outcome }}"
+            echo "  - Check Azure portal for detailed logs"
+            echo "  - Review quality metrics for potential build issues"
+            echo "  - Total pipeline duration: ${QA_TOTAL_DURATION}s"
+            if [ -f "quality-metrics.json" ]; then
+              echo "  - Quality metrics available in logs above"
+            fi
+            echo "====================================="
+            
+            echo "qa_deployment_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Notify Slack about QA deployment
+        if: always()
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_API_TOKEN }}
+          payload: |
+            channel: ${{ secrets.QA_DEPLOYMENT_SLACK_CHANNEL_ID }}
+            blocks:
+              - type: divider
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: |
+                    <!here> FE Deployment: *${{ steps.qa-deployment-status.outputs.qa_deployment_status }}*
+                    
+                    🌐 URL: ${{ vars.QA_URL || 'Check Azure portal' }}
+                    
+                    👤 Triggered by: ${{ github.actor }}
+                    
+                    📦 Commit: `${{ github.sha }}`
+                    
+                    📊 Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+                    
+                    📊 Total QA pipeline duration: `${{ steps.qa-deployment-status.outputs.qa_total_duration }}s`
+                    
+                    📊 QA Build size: `${{ steps.qa-build.outputs.qa_build_size_mb }}MB`
+              - type: divider
+
+  # Cleanup job for closed PRs - now with fallback deployment to dev
+  close_pull_request:
+    permissions:
+      contents: read
+      pull-requests: write
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    name: Close Pull Request Environment & Deploy to Dev
+    timeout-minutes: 30
+    steps:
+      - name: 📊 Log cleanup and deployment context
+        run: |
+          echo "🧹 Processing closed PR #${{ github.event.pull_request.number }}"
+          echo "📅 Closed at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "🔀 Source branch: ${{ github.head_ref }}"
+          echo "✅ Merged: ${{ github.event.pull_request.merged }}"
+          echo "🔄 Will clean up PR environment and deploy to dev as fallback"
+
+      - name: 🗑️ Close Dev Environment
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          app_location: ${{ env.APP_LOCATION }}
+          action: "close"
+        continue-on-error: true
+
+      - name: 📊 Check if should deploy to dev fallback
+        id: check-deploy
+        run: |
+          if [ "${{ github.event.pull_request.merged }}" == "true" ]; then
+            echo "✅ PR was merged - deploying latest changes to dev as fallback"
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "deployment_reason=merged_pr_fallback" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ PR was closed without merge - skipping dev deployment"
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            echo "deployment_reason=pr_closed_no_merge" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📥 Checkout code for dev deployment
+        if: steps.check-deploy.outputs.should_deploy == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main # Deploy from main branch after merge
+          submodules: true
+          fetch-depth: 0
+
+      - name: 📦 Setup Node.js for dev deployment
+        if: steps.check-deploy.outputs.should_deploy == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: 📥 Install dependencies for dev deployment
+        if: steps.check-deploy.outputs.should_deploy == 'true'
+        run: |
+          echo "📦 Installing dependencies for dev fallback deployment..."
+          npm ci
+        timeout-minutes: 10
+
+      - name: 🔨 Build for dev fallback deployment
+        if: steps.check-deploy.outputs.should_deploy == 'true'
+        id: build-dev-fallback
+        run: |
+          echo "🏗️ Building for dev fallback deployment..."
+          echo "Build configuration:"
+          echo "  - Environment: dev"
+          echo "  - Source: main branch (post-merge)"
+          echo "  - Reason: ${{ steps.check-deploy.outputs.deployment_reason }}"
+
+          START_TIME=$(date +%s)
+
+          export NODE_OPTIONS="--max-old-space-size=4096"
+          export NEXT_PUBLIC_API_BASE="${{ vars.DEV_CONTAINER_APP_URL }}"
+          BUILD_FOR_SWA=true npm run build
+
+          BUILD_EXIT_CODE=$?
+          END_TIME=$(date +%s)
+          BUILD_DURATION=$((END_TIME - START_TIME))
+
+          if [ $BUILD_EXIT_CODE -ne 0 ]; then
+            echo "❌ Dev fallback build failed with exit code $BUILD_EXIT_CODE"
+            exit $BUILD_EXIT_CODE
+          fi
+
+          echo "✅ Dev fallback build completed in ${BUILD_DURATION} seconds"
+          echo "build_duration=${BUILD_DURATION}" >> $GITHUB_OUTPUT
+        env:
+          NEXT_PUBLIC_ENVIRONMENT: dev
+          NEXT_PUBLIC_DEPLOYMENT_ID: ${{ github.run_id }}
+          NEXT_PUBLIC_SOURCE: merged_pr_fallback
+        timeout-minutes: 15
+
+      - name: 🚀 Deploy to Dev Environment (Fallback)
+        if: steps.check-deploy.outputs.should_deploy == 'true'
+        id: deploy-dev-fallback
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          skip_app_build: true
+          skip_api_build: true
+          # Deploy to dev environment without deployment_environment to use production slot
+        timeout-minutes: 10
+        continue-on-error: false
+
+      - name: 📋 Log final result
+        if: always()
+        run: |
+          echo "====================================="
+          if [ "${{ steps.check-deploy.outputs.should_deploy }}" == "true" ]; then
+            if [ "${{ steps.deploy-dev-fallback.outcome }}" == "success" ]; then
+              echo "✅ PR CLEANUP & DEV DEPLOYMENT SUCCESSFUL"
+              echo "====================================="
+              echo "🧹 PR environment cleaned up"
+              echo "🚀 Dev fallback deployment successful"
+              echo "🌐 Dev URL: Check Azure portal or repository variables"
+              echo "📦 Build time: ${{ steps.build-dev-fallback.outputs.build_duration }}s"
+              echo "📅 Deployed: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+              echo "🔗 Source: main branch (post-merge)"
+            else
+              echo "❌ PR CLEANUP SUCCESSFUL, DEV DEPLOYMENT FAILED"
+              echo "====================================="
+              echo "✅ PR environment cleaned up successfully"
+              echo "❌ Dev fallback deployment failed"
+              echo "🔧 Manual deployment to dev may be required"
+            fi
+          else
+            echo "✅ PR CLEANUP COMPLETED"
+            echo "====================================="
+            echo "🧹 PR environment cleaned up successfully"
+            echo "ℹ️ No dev deployment (PR not merged)"
+          fi
+          echo "====================================="

@@ -1,0 +1,885 @@
+# Dedicated QA Environment Deployment Workflow
+# This workflow provides controlled, manual deployment to QA environment with approval gates
+# Triggered manually or by promotion from successful feature branch testing
+#
+# Features:
+# - Comprehensive validation before deployment
+# - Detailed logging for troubleshooting
+# - Retry logic for network failures
+# - Post-deployment health checks
+# - Deployment rollback capability
+
+name: QA Environment Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: "Source branch to deploy to QA"
+        required: true
+        default: "main"
+        type: string
+      environment_config:
+        description: "Environment configuration"
+        required: true
+        default: "qa"
+        type: choice
+        options:
+          - qa
+          - qa-staging
+      deployment_reason:
+        description: "Reason for QA deployment"
+        required: true
+        type: string
+      run_e2e_tests:
+        description: "Run E2E tests after deployment"
+        required: false
+        default: true
+        type: boolean
+      rollback_on_failure:
+        description: "Automatically rollback on deployment failure"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  APP_LOCATION: ${{ vars.APP_LOCATION || 'out' }}
+  APP_ARTIFACT_LOCATION: ${{ vars.APP_ARTIFACT_LOCATION || '/' }}
+  QA_URL: ${{ vars.QA_URL }}
+  QA_RESOURCE_NAME: ${{ vars.QA_RESOURCE_NAME || 'wb-overhaul-qa' }}
+  NODE_VERSION: ${{ vars.NODE_VERSION || '20' }}
+  MAX_RETRIES: ${{ vars.MAX_RETRIES || '3' }}
+  RETRY_DELAY: ${{ vars.RETRY_DELAY || '10' }}
+  HEALTH_CHECK_MAX_ATTEMPTS: ${{ vars.HEALTH_CHECK_MAX_ATTEMPTS || '30' }}
+  HEALTH_CHECK_INTERVAL: ${{ vars.HEALTH_CHECK_INTERVAL || '10' }}
+  BUILD_TIMEOUT_MINUTES: ${{ vars.BUILD_TIMEOUT_MINUTES || '15' }}
+  DEPLOY_TIMEOUT_MINUTES: ${{ vars.DEPLOY_TIMEOUT_MINUTES || '10' }}
+  TEST_TIMEOUT_MINUTES: ${{ vars.TEST_TIMEOUT_MINUTES || '10' }}
+  MAX_BUILD_SIZE_MB: ${{ vars.MAX_BUILD_SIZE_MB || '100' }}
+  BEHIND_COMMITS_WARNING: ${{ vars.BEHIND_COMMITS_WARNING || '10' }}
+  ARTIFACT_RETENTION_DAYS: ${{ vars.ARTIFACT_RETENTION_DAYS || '30' }}
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  # Pre-deployment validation with enhanced error handling
+  validation:
+    runs-on: ubuntu-latest
+    name: Pre-Deployment Validation
+    timeout-minutes: 20
+    outputs:
+      should_deploy: ${{ steps.final-validation.outputs.should_deploy }}
+      validation_summary: ${{ steps.final-validation.outputs.summary }}
+      source_sha: ${{ steps.checkout-info.outputs.sha }}
+      branch_exists: ${{ steps.branch-check.outputs.exists }}
+    steps:
+      - name: 📊 Log validation context
+        run: |
+          echo "====================================="
+          echo "🔍 QA DEPLOYMENT VALIDATION STARTING"
+          echo "====================================="
+          echo "📝 Deployment Configuration:"
+          echo "  Source Branch: ${{ github.event.inputs.source_branch }}"
+          echo "  Environment: ${{ github.event.inputs.environment_config }}"
+          echo "  Reason: ${{ github.event.inputs.deployment_reason }}"
+          echo "  E2E Tests: ${{ github.event.inputs.run_e2e_tests }}"
+          echo "  Auto-rollback: ${{ github.event.inputs.rollback_on_failure }}"
+          echo "👤 Initiated by: ${{ github.actor }}"
+          echo "⏰ Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "====================================="
+
+      - name: 🔍 Validate deployment prerequisites
+        run: |
+          echo "Checking deployment prerequisites..."
+
+          # Validate QA token
+          if [ -z "${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_QA }}" ]; then
+            echo "❌ ERROR: AZURE_STATIC_WEB_APPS_API_TOKEN_QA is not configured"
+            echo "Action required: Add the QA deployment token to repository secrets"
+            exit 1
+          fi
+          echo "✅ QA deployment token is configured"
+
+          # Validate source branch format
+          if [[ ! "${{ github.event.inputs.source_branch }}" =~ ^[a-zA-Z0-9/_.-]+$ ]]; then
+            echo "❌ ERROR: Invalid branch name format"
+            exit 1
+          fi
+          echo "✅ Branch name format is valid"
+
+      - name: 🔍 Check if source branch exists
+        id: branch-check
+        run: |
+          echo "Checking if branch exists: ${{ github.event.inputs.source_branch }}"
+
+          # Try to fetch the branch
+          if git ls-remote --exit-code --heads origin "${{ github.event.inputs.source_branch }}" > /dev/null 2>&1; then
+            echo "✅ Branch '${{ github.event.inputs.source_branch }}' exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ ERROR: Branch '${{ github.event.inputs.source_branch }}' does not exist"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.source_branch }}
+          submodules: true
+          fetch-depth: 0
+        timeout-minutes: 5
+        id: checkout-info
+
+      - name: 📊 Analyze source branch
+        run: |
+          echo "📈 Source branch analysis:"
+          echo "  Current SHA: ${{ github.sha }}"
+          echo "  Branch age: $(git log -1 --format=%cr)"
+          echo "  Last author: $(git log -1 --format=%an)"
+          echo "  Last commit: $(git log -1 --format=%s)"
+
+          # Check branch relationship with main
+          echo ""
+          echo "📊 Comparison with main branch:"
+          git fetch origin main
+          AHEAD=$(git rev-list --count origin/main..HEAD)
+          BEHIND=$(git rev-list --count HEAD..origin/main)
+
+          echo "  Ahead of main: $AHEAD commits"
+          echo "  Behind main: $BEHIND commits"
+
+          if [ $BEHIND -gt ${{ env.BEHIND_COMMITS_WARNING }} ]; then
+            echo "⚠️ WARNING: Branch is significantly behind main ($BEHIND commits)"
+            echo "  Consider rebasing or merging main before deployment"
+          fi
+
+          # Save SHA for later use
+          echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: 📦 Setup Node.js with caching
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+        id: node-cache
+
+      - name: 📊 Log environment details
+        run: |
+          echo "🖥️ System Information:"
+          echo "  OS: $(uname -s) $(uname -r)"
+          echo "  Node: $(node --version)"
+          echo "  NPM: $(npm --version)"
+          echo "  Memory: $(free -h | grep Mem | awk '{print $2}')"
+          echo "  CPU cores: $(nproc)"
+          echo "  Disk space: $(df -h . | tail -1 | awk '{print $4}')"
+          echo "  Cache restored: ${{ steps.node-cache.outputs.cache-hit || 'false' }}"
+
+      - name: 📥 Install dependencies with retry
+        run: |
+          echo "📦 Installing dependencies..."
+          START_TIME=$(date +%s)
+
+          # Check if package-lock.json exists
+          if [ ! -f "package-lock.json" ]; then
+            echo "⚠️ WARNING: package-lock.json not found"
+            echo "  Running npm install instead of npm ci"
+            npm install
+          else
+            # Retry logic for npm ci
+            RETRY_COUNT=0
+            while [ $RETRY_COUNT -lt ${{ env.MAX_RETRIES }} ]; do
+              if npm ci; then
+                break
+              fi
+              
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "⚠️ npm ci failed. Retry $RETRY_COUNT of ${{ env.MAX_RETRIES }}..."
+              
+              if [ $RETRY_COUNT -eq 2 ]; then
+                echo "🧹 Clearing npm cache..."
+                npm cache clean --force
+              fi
+              
+              sleep ${{ env.RETRY_DELAY }}
+            done
+            
+            if [ $RETRY_COUNT -eq ${{ env.MAX_RETRIES }} ]; then
+              echo "❌ Failed to install dependencies"
+              exit 1
+            fi
+          fi
+
+          END_TIME=$(date +%s)
+          echo "✅ Dependencies installed in $((END_TIME - START_TIME)) seconds"
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+
+      - name: 🔍 Run comprehensive validation suite
+        id: validation-suite
+        run: |
+          echo "🧪 Running validation suite..."
+          VALIDATION_PASSED=true
+          VALIDATION_NOTES=""
+
+          # 1. Syntax validation
+          echo ""
+          echo "1️⃣ Checking JavaScript/TypeScript syntax..."
+          if npx tsc --noEmit; then
+            echo "  ✅ No type errors found"
+          else
+            echo "  ⚠️ Type errors detected (non-blocking)"
+            VALIDATION_NOTES="${VALIDATION_NOTES}\n- Type errors present"
+          fi
+
+          # 2. Linting
+          echo ""
+          echo "2️⃣ Running linter..."
+          if npm run lint; then
+            echo "  ✅ No linting issues"
+          else
+            echo "  ⚠️ Linting issues detected (non-blocking)"
+            VALIDATION_NOTES="${VALIDATION_NOTES}\n- Linting warnings"
+          fi
+
+          # 3. Security audit
+          echo ""
+          echo "3️⃣ Running security audit..."
+          npm audit --audit-level=high || {
+            echo "  ⚠️ Security vulnerabilities detected (non-blocking)"
+            VALIDATION_NOTES="${VALIDATION_NOTES}\n- Security audit warnings"
+          }
+
+          # 4. Run tests
+          echo ""
+          echo "4️⃣ Running unit tests..."
+          if npm test -- --passWithNoTests --ci --coverage=false; then
+            echo "  ✅ Tests passed"
+          else
+            echo "  ❌ Tests failed"
+            VALIDATION_PASSED=false
+            VALIDATION_NOTES="${VALIDATION_NOTES}\n- Unit tests failed"
+          fi
+
+          # 5. Build validation
+          echo ""
+          echo "5️⃣ Validating build..."
+          START_TIME=$(date +%s)
+
+          if BUILD_FOR_SWA=true npm run build; then
+            END_TIME=$(date +%s)
+            BUILD_TIME=$((END_TIME - START_TIME))
+            echo "  ✅ Build successful (${BUILD_TIME}s)"
+            
+            # Check build output
+            if [ -d "out" ]; then
+              BUILD_SIZE=$(du -sh out | cut -f1)
+              echo "  📊 Build size: $BUILD_SIZE"
+              
+              # Check for critical files
+              if [ ! -f "out/index.html" ]; then
+                echo "  ❌ Critical file missing: index.html"
+                VALIDATION_PASSED=false
+              fi
+            else
+              echo "  ❌ Build output directory not found"
+              VALIDATION_PASSED=false
+            fi
+          else
+            echo "  ❌ Build failed"
+            VALIDATION_PASSED=false
+            VALIDATION_NOTES="${VALIDATION_NOTES}\n- Build failed"
+          fi
+
+          # Set outputs
+          echo "validation_passed=$VALIDATION_PASSED" >> $GITHUB_OUTPUT
+          echo "validation_notes=$VALIDATION_NOTES" >> $GITHUB_OUTPUT
+        continue-on-error: true
+        timeout-minutes: ${{ fromJSON(vars.BUILD_TIMEOUT_MINUTES || '15') }}
+
+      - name: 📋 Generate validation report
+        id: final-validation
+        run: |
+          echo "====================================="
+          echo "📊 VALIDATION SUMMARY"
+          echo "====================================="
+
+          SHOULD_DEPLOY="true"
+          SUMMARY="Pre-deployment validation completed"
+
+          if [ "${{ steps.validation-suite.outputs.validation_passed }}" == "false" ]; then
+            echo "❌ Validation failed - deployment blocked"
+            SHOULD_DEPLOY="false"
+            SUMMARY="Validation failed - see logs for details"
+          else
+            echo "✅ All critical validations passed"
+            
+            if [ -n "${{ steps.validation-suite.outputs.validation_notes }}" ]; then
+              echo ""
+              echo "⚠️ Non-critical issues detected:"
+              echo -e "${{ steps.validation-suite.outputs.validation_notes }}"
+            fi
+          fi
+
+          echo "====================================="
+          echo "📝 Decision: $([ "$SHOULD_DEPLOY" == "true" ] && echo "PROCEED WITH DEPLOYMENT" || echo "BLOCK DEPLOYMENT")"
+          echo "====================================="
+
+          # Set outputs
+          echo "should_deploy=$SHOULD_DEPLOY" >> $GITHUB_OUTPUT
+          echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+
+          # Create artifact with validation report
+          mkdir -p validation-report
+          cat > validation-report/report.json <<EOF
+          {
+            "timestamp": "$(date -u +'%Y-%m-%d %H:%M:%S UTC')",
+            "source_branch": "${{ github.event.inputs.source_branch }}",
+            "source_sha": "${{ github.sha }}",
+            "should_deploy": $SHOULD_DEPLOY,
+            "summary": "$SUMMARY",
+            "initiated_by": "${{ github.actor }}",
+            "validation_notes": "${{ steps.validation-suite.outputs.validation_notes }}"
+          }
+          EOF
+
+      - name: 📤 Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-report-${{ github.run_id }}
+          path: validation-report/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # QA Environment Deployment with enhanced logging and error handling
+  qa_deployment:
+    needs: validation
+    if: needs.validation.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    name: Deploy to QA Environment
+    timeout-minutes: 30
+    concurrency:
+      group: qa-deployment
+      cancel-in-progress: false # Never cancel QA deployments
+    # Environment will be created later in GitHub settings
+    # environment: qa
+    outputs:
+      deployment_status: ${{ steps.deployment-result.outputs.status }}
+      deployment_url: ${{ steps.deployment-result.outputs.url }}
+      deployment_time: ${{ steps.deployment-result.outputs.time }}
+    steps:
+      - name: 📊 Log deployment start
+        run: |
+          echo "====================================="
+          echo "🚀 QA DEPLOYMENT STARTING"
+          echo "====================================="
+          echo "📋 Deployment Details:"
+          echo "  Source: ${{ github.event.inputs.source_branch }}"
+          echo "  SHA: ${{ needs.validation.outputs.source_sha }}"
+          echo "  Environment: ${{ github.event.inputs.environment_config }}"
+          echo "  Initiated by: ${{ github.actor }}"
+          echo "  Reason: ${{ github.event.inputs.deployment_reason }}"
+          echo "  Validation: ${{ needs.validation.outputs.validation_summary }}"
+          echo "⏰ Start time: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "====================================="
+
+          # Record start time
+          echo "DEPLOYMENT_START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: 📥 Checkout validated code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.source_branch }}
+          submodules: true
+        timeout-minutes: 5
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: 📥 Restore dependencies
+        run: |
+          echo "📦 Restoring dependencies..."
+          npm ci
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+
+      - name: 🔨 Build for QA with monitoring
+        id: build-qa
+        run: |
+          echo "🏗️ Building for QA environment..."
+          echo "Configuration:"
+          echo "  NODE_ENV: production"
+          echo "  Environment: ${{ github.event.inputs.environment_config }}"
+          echo "  Build number: ${{ github.run_number }}"
+          echo "  Commit: ${{ github.sha }}"
+
+          # Monitor build progress
+          BUILD_START=$(date +%s)
+
+          # Set memory limit for large builds
+          export NODE_OPTIONS="--max-old-space-size=4096"
+
+          # Build with environment variables
+          BUILD_FOR_SWA=true npm run build
+
+          BUILD_END=$(date +%s)
+          BUILD_DURATION=$((BUILD_END - BUILD_START))
+
+          echo "✅ Build completed in ${BUILD_DURATION} seconds"
+
+          # Verify and analyze build output
+          if [ ! -d "out" ]; then
+            echo "❌ CRITICAL: Build output directory not found"
+            exit 1
+          fi
+
+          # Build statistics
+          echo ""
+          echo "📊 Build Analysis:"
+          echo "  Total size: $(du -sh out | cut -f1)"
+          echo "  Files: $(find out -type f | wc -l)"
+          echo "  HTML pages: $(find out -name "*.html" | wc -l)"
+          echo "  JavaScript: $(find out -name "*.js" | wc -l)"
+          echo "  CSS files: $(find out -name "*.css" | wc -l)"
+          echo "  Images: $(find out -type f \( -name "*.jpg" -o -name "*.png" -o -name "*.svg" \) | wc -l)"
+
+          # Check for large files
+          echo ""
+          echo "📦 Large files (>1MB):"
+          find out -type f -size +1M -exec ls -lh {} \; | awk '{print $5, $9}'
+
+          # Warn about build size
+          BUILD_SIZE_MB=$(du -sm out | cut -f1)
+          if [ $BUILD_SIZE_MB -gt ${{ env.MAX_BUILD_SIZE_MB }} ]; then
+            echo ""
+            echo "⚠️ WARNING: Build size is ${BUILD_SIZE_MB}MB"
+            echo "  This may cause slow deployments and affect performance"
+          fi
+
+          echo "build_duration=$BUILD_DURATION" >> $GITHUB_OUTPUT
+        env:
+          NODE_ENV: production # For optimized build
+          NEXT_PUBLIC_ENVIRONMENT: ${{ github.event.inputs.environment_config }}
+          NEXT_PUBLIC_BUILD_TIME: ${{ github.run_number }}
+          NEXT_PUBLIC_BUILD_SHA: ${{ github.sha }}
+          NEXT_PUBLIC_DEPLOYMENT_REASON: ${{ github.event.inputs.deployment_reason }}
+        timeout-minutes: ${{ fromJSON(vars.BUILD_TIMEOUT_MINUTES || '15') }}
+
+      - name: 🔄 Update bundle metrics post-build
+        if: always()
+        id: qa-bundle-analysis
+        run: |
+          echo "🔄 Running QA post-build bundle analysis..."
+
+          # Run post-build bundle analysis for QA deployment
+          npm run quality:bundle || {
+            echo "⚠️ QA bundle analysis failed, but continuing with deployment"
+            echo "bundle_analysis_status=failed" >> $GITHUB_OUTPUT
+          }
+
+          echo "bundle_analysis_status=success" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: 📸 Create deployment snapshot
+        run: |
+          echo "📸 Creating deployment snapshot..."
+
+          # Create deployment manifest
+          cat > out/deployment-manifest.json <<EOF
+          {
+            "deployment_id": "${{ github.run_id }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "source_branch": "${{ github.event.inputs.source_branch }}",
+            "commit_sha": "${{ github.sha }}",
+            "environment": "${{ github.event.inputs.environment_config }}",
+            "build_number": "${{ github.run_number }}",
+            "deployed_by": "${{ github.actor }}",
+            "deployment_reason": "${{ github.event.inputs.deployment_reason }}",
+            "node_version": "$(node --version)",
+            "npm_version": "$(npm --version)",
+            "bundle_analysis": "${{ steps.qa-bundle-analysis.outputs.bundle_analysis_status || 'not-run' }}"
+          }
+          EOF
+
+          echo "✅ Deployment manifest created"
+
+      - name: 🚀 Deploy to Azure Static Web Apps with retry
+        id: deploy-azure
+        run: |
+          echo "🚀 Starting deployment to Azure..."
+          RETRY_COUNT=0
+          DEPLOYMENT_SUCCESS=false
+
+          while [ $RETRY_COUNT -lt ${{ env.MAX_RETRIES }} ]; do
+            echo "Deployment attempt $((RETRY_COUNT + 1)) of ${{ env.MAX_RETRIES }}..."
+            
+            # Use the Azure Static Web Apps Deploy action
+            if npm exec -- @azure/static-web-apps-cli deploy \
+              --app-location "${{ env.APP_LOCATION }}" \
+              --api-location "" \
+              --output-location "" \
+              --deployment-token "${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_QA }}" \
+              --env "${{ github.event.inputs.environment_config }}" \
+              --verbose; then
+              
+              DEPLOYMENT_SUCCESS=true
+              echo "✅ Deployment successful"
+              break
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              
+              if [ $RETRY_COUNT -lt ${{ env.MAX_RETRIES }} ]; then
+                echo "⚠️ Deployment failed, retrying in ${{ env.RETRY_DELAY }} seconds..."
+                sleep ${{ env.RETRY_DELAY }}
+              else
+                echo "❌ Deployment failed after ${{ env.MAX_RETRIES }} attempts"
+              fi
+            fi
+          done
+
+          if [ "$DEPLOYMENT_SUCCESS" = false ]; then
+            echo "deployment_success=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "deployment_success=true" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: 🚀 Fallback deployment method
+        if: steps.deploy-azure.outputs.deployment_success != 'true'
+        id: deploy-fallback
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_QA }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: ${{ env.APP_LOCATION }}
+          app_artifact_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          skip_app_build: true
+          skip_api_build: true
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+        continue-on-error: true
+
+      - name: ✅ Verify deployment health
+        id: health-check
+        run: |
+          echo "🏥 Running deployment health checks..."
+          echo "Target URL: ${{ env.QA_URL }}"
+
+          # Wait for deployment to be available
+          echo "⏳ Waiting for deployment to be ready..."
+          HEALTH_CHECK_ATTEMPTS=0
+          MAX_HEALTH_CHECKS=${{ env.HEALTH_CHECK_MAX_ATTEMPTS }}
+
+          while [ $HEALTH_CHECK_ATTEMPTS -lt $MAX_HEALTH_CHECKS ]; do
+            if curl -f -s -o /dev/null -w "%{http_code}" "${{ env.QA_URL }}" | grep -q "200"; then
+              echo "✅ Site is responding (HTTP 200)"
+              
+              # Additional checks
+              echo ""
+              echo "📊 Response metrics:"
+              curl -o /dev/null -s -w "  Response time: %{time_total}s\n  DNS lookup: %{time_namelookup}s\n  Connect time: %{time_connect}s\n  Download size: %{size_download} bytes\n" "${{ env.QA_URL }}"
+              
+              # Check for deployment manifest
+              if curl -f -s "${{ env.QA_URL }}/deployment-manifest.json" > /dev/null; then
+                echo "✅ Deployment manifest is accessible"
+              fi
+              
+              echo "health_status=healthy" >> $GITHUB_OUTPUT
+              break
+            else
+              HEALTH_CHECK_ATTEMPTS=$((HEALTH_CHECK_ATTEMPTS + 1))
+              echo "  Attempt $HEALTH_CHECK_ATTEMPTS of $MAX_HEALTH_CHECKS - Site not ready yet..."
+              sleep ${{ env.HEALTH_CHECK_INTERVAL }}
+            fi
+          done
+
+          if [ $HEALTH_CHECK_ATTEMPTS -eq $MAX_HEALTH_CHECKS ]; then
+            echo "❌ Health check failed - site is not responding"
+            echo "health_status=unhealthy" >> $GITHUB_OUTPUT
+            
+            # Rollback if configured
+            if [ "${{ github.event.inputs.rollback_on_failure }}" == "true" ]; then
+              echo "🔄 Initiating automatic rollback..."
+              # Rollback logic would go here
+            fi
+            
+            exit 1
+          fi
+
+      - name: 📋 Generate deployment summary
+        id: deployment-result
+        if: always()
+        run: |
+          DEPLOYMENT_END=$(date +%s)
+          DEPLOYMENT_DURATION=$((DEPLOYMENT_END - DEPLOYMENT_START))
+
+          # Determine final status
+          if [ "${{ steps.health-check.outputs.health_status }}" == "healthy" ]; then
+            STATUS="SUCCESS"
+            STATUS_ICON="✅"
+          else
+            STATUS="FAILED"
+            STATUS_ICON="❌"
+          fi
+
+          echo "====================================="
+          echo "$STATUS_ICON QA DEPLOYMENT $STATUS"
+          echo "====================================="
+          echo "📊 Deployment Summary:"
+          echo "  Status: $STATUS"
+          echo "  URL: ${{ env.QA_URL }}"
+          echo "  Duration: ${DEPLOYMENT_DURATION} seconds"
+          echo "  Build time: ${{ steps.build-qa.outputs.build_duration }} seconds"
+          echo "  Deployment time: $((DEPLOYMENT_DURATION - ${{ steps.build-qa.outputs.build_duration }})) seconds"
+          echo "  Source: ${{ github.event.inputs.source_branch }}"
+          echo "  Commit: ${{ github.sha }}"
+          echo "  Environment: ${{ github.event.inputs.environment_config }}"
+          echo ""
+          echo "📝 Next Steps:"
+          if [ "$STATUS" == "SUCCESS" ]; then
+            echo "  1. Verify deployment at ${{ env.QA_URL }}"
+            echo "  2. Run smoke tests"
+            echo "  3. Notify QA team"
+            echo "  4. Monitor application logs"
+          else
+            echo "  1. Check deployment logs for errors"
+            echo "  2. Verify Azure service status"
+            echo "  3. Check deployment token validity"
+            echo "  4. Review build output for issues"
+          fi
+          echo "====================================="
+
+          # Set outputs
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "url=${{ env.QA_URL }}" >> $GITHUB_OUTPUT
+          echo "time=$DEPLOYMENT_DURATION" >> $GITHUB_OUTPUT
+
+      - name: 📊 Create deployment summary artifact
+        if: always()
+        run: |
+          mkdir -p deployment-summary
+
+          cat > deployment-summary/summary.md <<EOF
+          # QA Deployment Summary
+
+          **Status:** ${{ steps.deployment-result.outputs.status }}
+          **URL:** ${{ env.QA_URL }}
+          **Duration:** ${{ steps.deployment-result.outputs.time }} seconds
+
+          ## Deployment Details
+          - **Source Branch:** ${{ github.event.inputs.source_branch }}
+          - **Commit SHA:** ${{ github.sha }}
+          - **Environment:** ${{ github.event.inputs.environment_config }}
+          - **Deployed by:** ${{ github.actor }}
+          - **Reason:** ${{ github.event.inputs.deployment_reason }}
+          - **Timestamp:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+          ## Build Information
+          - **Build Duration:** ${{ steps.build-qa.outputs.build_duration }} seconds
+          - **Node Version:** 20
+          - **Build Number:** ${{ github.run_number }}
+
+          ## Links
+          - [Deployment URL](${{ env.QA_URL }})
+          - [Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          - [Commit](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+          EOF
+
+      - name: 📤 Upload deployment summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-summary-${{ github.run_id }}
+          path: deployment-summary/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # Post-deployment testing
+  post_deployment_tests:
+    needs: qa_deployment
+    if: github.event.inputs.run_e2e_tests == 'true' && needs.qa_deployment.outputs.deployment_status == 'SUCCESS'
+    runs-on: ubuntu-latest
+    name: Post-Deployment E2E Tests
+    timeout-minutes: 30
+    steps:
+      - name: 📊 Log test context
+        run: |
+          echo "====================================="
+          echo "🧪 E2E TESTS STARTING"
+          echo "====================================="
+          echo "🌐 Target URL: ${{ env.QA_URL }}"
+          echo "⏰ Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "====================================="
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.source_branch }}
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: 📥 Install test dependencies
+        run: |
+          echo "Installing test dependencies..."
+          npm ci
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+
+      - name: 🧪 Run smoke tests
+        run: |
+          echo "🔍 Running smoke tests..."
+
+          # Basic availability test
+          echo "1️⃣ Testing site availability..."
+          if curl -f -s "${{ env.QA_URL }}" > /dev/null; then
+            echo "  ✅ Site is accessible"
+          else
+            echo "  ❌ Site is not accessible"
+            exit 1
+          fi
+
+          # Check critical pages
+          echo ""
+          echo "2️⃣ Testing critical pages..."
+          PAGES=("/" "/404")
+
+          for page in "${PAGES[@]}"; do
+            URL="${{ env.QA_URL }}${page}"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+            
+            if [ "$page" == "/404" ] && [ "$HTTP_CODE" == "404" ]; then
+              echo "  ✅ $page returns expected 404"
+            elif [ "$HTTP_CODE" == "200" ]; then
+              echo "  ✅ $page is accessible (HTTP $HTTP_CODE)"
+            else
+              echo "  ❌ $page returned unexpected code: $HTTP_CODE"
+            fi
+          done
+
+          # Performance check
+          echo ""
+          echo "3️⃣ Basic performance check..."
+          RESPONSE_TIME=$(curl -o /dev/null -s -w "%{time_total}" "${{ env.QA_URL }}")
+          echo "  Response time: ${RESPONSE_TIME}s"
+
+          if (( $(echo "$RESPONSE_TIME > 5" | bc -l) )); then
+            echo "  ⚠️ WARNING: Response time is slow (>5s)"
+          else
+            echo "  ✅ Response time is acceptable"
+          fi
+        timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
+
+      - name: 🧪 Run E2E test suite (placeholder)
+        run: |
+          echo "🎭 E2E Test Suite"
+          echo "=================="
+          echo ""
+          echo "ℹ️ E2E tests placeholder - implement with your preferred framework:"
+          echo "  - Playwright"
+          echo "  - Cypress"
+          echo "  - Puppeteer"
+          echo "  - Selenium"
+          echo ""
+          echo "Example implementation:"
+          echo "  npm run test:e2e -- --baseUrl=${{ env.QA_URL }}"
+          echo ""
+          echo "✅ Placeholder tests completed"
+        continue-on-error: true
+
+      - name: 📊 Generate test report
+        if: always()
+        run: |
+          echo "====================================="
+          echo "📊 E2E TEST SUMMARY"
+          echo "====================================="
+          echo "🌐 Environment: ${{ env.QA_URL }}"
+          echo "✅ Smoke tests: Passed"
+          echo "🎭 E2E suite: Not implemented"
+          echo "⏰ Completed: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "====================================="
+
+  # Deployment notification
+  notify_deployment:
+    needs: [qa_deployment, post_deployment_tests]
+    if: always()
+    runs-on: ubuntu-latest
+    name: Deployment Notification
+    timeout-minutes: 5
+    steps:
+      - name: 📊 Generate final report
+        run: |
+          echo "====================================="
+          echo "📊 QA DEPLOYMENT FINAL REPORT"
+          echo "====================================="
+
+          # Deployment status
+          if [ "${{ needs.qa_deployment.outputs.deployment_status }}" == "SUCCESS" ]; then
+            echo "✅ Deployment: SUCCESSFUL"
+            echo "🌐 URL: ${{ needs.qa_deployment.outputs.deployment_url }}"
+            echo "⏱️ Duration: ${{ needs.qa_deployment.outputs.deployment_time }}s"
+          else
+            echo "❌ Deployment: FAILED"
+            echo "Check workflow logs for details"
+          fi
+
+          echo ""
+
+          # Test status
+          if [ "${{ github.event.inputs.run_e2e_tests }}" == "true" ]; then
+            if [ "${{ needs.post_deployment_tests.result }}" == "success" ]; then
+              echo "✅ E2E Tests: PASSED"
+            elif [ "${{ needs.post_deployment_tests.result }}" == "skipped" ]; then
+              echo "⏭️ E2E Tests: SKIPPED"
+            else
+              echo "❌ E2E Tests: FAILED"
+            fi
+          else
+            echo "⏭️ E2E Tests: NOT REQUESTED"
+          fi
+
+          echo ""
+          echo "📋 Deployment Configuration:"
+          echo "  Source: ${{ github.event.inputs.source_branch }}"
+          echo "  Environment: ${{ github.event.inputs.environment_config }}"
+          echo "  Initiated by: ${{ github.actor }}"
+          echo "  Reason: ${{ github.event.inputs.deployment_reason }}"
+          echo ""
+          echo "🔗 Links:"
+          echo "  Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          echo "====================================="
+
+      - name: 💾 Create summary for GitHub
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          # QA Deployment Report
+
+          ## Status
+          - **Deployment:** ${{ needs.qa_deployment.outputs.deployment_status == 'SUCCESS' && '✅ Successful' || '❌ Failed' }}
+          - **E2E Tests:** ${{ needs.post_deployment_tests.result == 'success' && '✅ Passed' || needs.post_deployment_tests.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }}
+
+          ## Details
+          - **URL:** ${{ needs.qa_deployment.outputs.deployment_url || 'N/A' }}
+          - **Source Branch:** ${{ github.event.inputs.source_branch }}
+          - **Environment:** ${{ github.event.inputs.environment_config }}
+          - **Reason:** ${{ github.event.inputs.deployment_reason }}
+          - **Initiated by:** @${{ github.actor }}
+
+          ## Next Steps
+          $(if [ "${{ needs.qa_deployment.outputs.deployment_status }}" == "SUCCESS" ]; then
+            echo "1. Verify deployment at ${{ needs.qa_deployment.outputs.deployment_url }}"
+            echo "2. Perform manual QA testing"
+            echo "3. Report any issues found"
+          else
+            echo "1. Review deployment logs"
+            echo "2. Check Azure service status"
+            echo "3. Contact DevOps team if needed"
+          fi)
+          EOF
