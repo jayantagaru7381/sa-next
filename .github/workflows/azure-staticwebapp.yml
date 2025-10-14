@@ -9,10 +9,10 @@ name: Multi-Environment Azure Static Web Apps Deployment
 
 on:
   push:
-    branches: ["main", "qa"]
+    branches: []
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    branches: ["main"]
+    branches: []
 
 # Environment variables available to all jobs and steps in this workflow
 env:
