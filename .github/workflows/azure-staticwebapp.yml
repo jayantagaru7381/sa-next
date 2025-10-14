@@ -285,6 +285,9 @@ jobs:
           NEXT_PUBLIC_PR_NUMBER: ${{ github.event.pull_request.number }}
           NEXT_PUBLIC_DEPLOYMENT_ID: ${{ github.run_id }}
 
+      - name: 📋 Copy staticwebapp.config.json to build output
+        run: cp staticwebapp.config.json out/
+
       - name: 🚀 Deploy to Dev Environment
         id: deploy
         uses: Azure/static-web-apps-deploy@v1
@@ -292,10 +295,13 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          app_location: ${{ env.APP_ARTIFACT_LOCATION }}
-          skip_app_build: true
+          app_location: ${{ env.APP_LOCATION }}
+          output_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          api_location: ""
           skip_api_build: true
           deployment_environment: "Dev"
+        env:
+          IS_STATIC_EXPORT: true
         timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
         continue-on-error: true
 
@@ -319,26 +325,30 @@ jobs:
         id: deployment-status
         run: |
           # Update quality metrics with final build and deployment data
-          if [ -f "quality-metrics.json" ]; then
+          if [ -f "quality-metrics.json" ] && [ -w "quality-metrics.json" ]; then
             # Update performance metrics with final build data
             BUILD_END_TIME=$(date +%s)
             TOTAL_DURATION=$((BUILD_END_TIME - ${BUILD_START_TIME:-$BUILD_END_TIME}))
-            
+
             # Create final metrics update
             node -e "
               const fs = require('fs');
-              const metrics = JSON.parse(fs.readFileSync('quality-metrics.json', 'utf8'));
-              metrics.performance = metrics.performance || {};
-              metrics.performance.totalDuration = $TOTAL_DURATION;
-              metrics.performance.buildDuration = '${{ steps.build.outputs.build_duration }}';
-              metrics.performance.deploymentStatus = '${{ steps.deploy.outcome }}';
-              metrics.performance.bundleAnalysisStatus = '${{ steps.bundle-analysis.outputs.bundle_analysis_status }}';
-              
-              // Bundle metrics should now be complete from post-build analysis
-              console.log('Bundle metrics status:', metrics.bundle?.status || 'unknown');
-              
-              fs.writeFileSync('quality-metrics.json', JSON.stringify(metrics, null, 2));
-            "
+              try {
+                const metrics = JSON.parse(fs.readFileSync('quality-metrics.json', 'utf8'));
+                metrics.performance = metrics.performance || {};
+                metrics.performance.totalDuration = $TOTAL_DURATION;
+                metrics.performance.buildDuration = '${{ steps.build.outputs.build_duration }}';
+                metrics.performance.deploymentStatus = '${{ steps.deploy.outcome }}';
+                metrics.performance.bundleAnalysisStatus = '${{ steps.bundle-analysis.outputs.bundle_analysis_status }}';
+
+                // Bundle metrics should now be complete from post-build analysis
+                console.log('Bundle metrics status:', metrics.bundle?.status || 'unknown');
+
+                fs.writeFileSync('quality-metrics.json', JSON.stringify(metrics, null, 2));
+              } catch (err) {
+                console.log('Warning: Could not update quality metrics:', err.message);
+              }
+            " || echo "⚠️ Warning: Could not update quality metrics (non-critical)"
           fi
 
           if [ "${{ steps.deploy.outcome }}" == "success" ]; then
@@ -602,6 +612,9 @@ jobs:
           NEXT_PUBLIC_SOURCE: main_branch
         timeout-minutes: ${{ fromJSON(env.BUILD_TIMEOUT_MINUTES) }}
 
+      - name: 📋 Copy staticwebapp.config.json to build output
+        run: cp staticwebapp.config.json out/
+
       - name: 🚀 Deploy to Azure Static Web Apps (Dev)
         id: builddeploy
         uses: Azure/static-web-apps-deploy@v1
@@ -609,9 +622,12 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          app_location: ${{ env.APP_ARTIFACT_LOCATION }}
-          skip_app_build: true
+          app_location: ${{ env.APP_LOCATION }}
+          output_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          api_location: ""
           skip_api_build: true
+        env:
+          IS_STATIC_EXPORT: true
         timeout-minutes: ${{ fromJSON(env.DEPLOY_TIMEOUT_MINUTES) }}
 
       - name: 🎉 Deployment Success Summary
@@ -737,20 +753,24 @@ jobs:
           # Check if we have existing quality metrics from artifact
           if [ -f "quality-metrics.json" ]; then
             echo "✅ Reusing quality metrics from previous job (saves ~2-3 minutes)"
-            
+
             # Add QA-specific metadata without re-running expensive checks
             node -e "
               const fs = require('fs');
-              const metrics = JSON.parse(fs.readFileSync('quality-metrics.json', 'utf8'));
-              metrics.environment = 'qa';
-              metrics.qa_deployment = {
-                timestamp: new Date().toISOString(),
-                job_id: '${{ github.run_id }}',
-                branch: '${{ github.ref_name }}'
-              };
-              fs.writeFileSync('quality-metrics.json', JSON.stringify(metrics, null, 2));
-              console.log('📊 QA-enhanced metrics prepared successfully');
-            "
+              try {
+                const metrics = JSON.parse(fs.readFileSync('quality-metrics.json', 'utf8'));
+                metrics.environment = 'qa';
+                metrics.qa_deployment = {
+                  timestamp: new Date().toISOString(),
+                  job_id: '${{ github.run_id }}',
+                  branch: '${{ github.ref_name }}'
+                };
+                fs.writeFileSync('quality-metrics.json', JSON.stringify(metrics, null, 2));
+                console.log('📊 QA-enhanced metrics prepared successfully');
+              } catch (err) {
+                console.log('⚠️ Warning: Could not update quality metrics:', err.message);
+              }
+            " || echo "⚠️ Warning: Could not update quality metrics (non-critical)"
           else
             echo "⚠️ No existing quality metrics found, running fresh collection..."
             # Fallback: run quality collection only if artifact wasn't available
@@ -860,6 +880,9 @@ jobs:
           NEXT_PUBLIC_BUILD_ID: ${{ github.sha }}
         timeout-minutes: ${{ fromJSON(vars.BUILD_TIMEOUT_MINUTES || '15') }}
 
+      - name: 📋 Copy staticwebapp.config.json to build output
+        run: cp staticwebapp.config.json out/
+
       - name: 🚀 Deploy to QA Environment (wb-overhaul-qa)
         id: deploy-qa
         uses: Azure/static-web-apps-deploy@v1
@@ -867,10 +890,13 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_QA }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          app_location: ${{ env.APP_ARTIFACT_LOCATION }}
-          skip_app_build: true
+          app_location: ${{ env.APP_LOCATION }}
+          output_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          api_location: ""
           skip_api_build: true
           # Removed deployment_environment to deploy to production slot
+        env:
+          IS_STATIC_EXPORT: true
         timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
 
       - name: 🔄 Update QA bundle metrics post-build
@@ -893,12 +919,12 @@ jobs:
         id: qa-deployment-status
         run: |
           # Update QA quality metrics with final build and deployment data
-          if [ -f "quality-metrics.json" ]; then
+          if [ -f "quality-metrics.json" ] && [ -w "quality-metrics.json" ]; then
             # Update performance metrics with final QA build data
             QA_BUILD_END_TIME=$(date +%s)
             QA_TOTAL_DURATION=$((QA_BUILD_END_TIME - ${BUILD_START_TIME:-$QA_BUILD_END_TIME}))
             echo "qa_total_duration=$QA_TOTAL_DURATION" >> $GITHUB_OUTPUT
-            
+
             # Create final QA metrics update
             node -e "
               const fs = require('fs');
@@ -910,16 +936,16 @@ jobs:
                 metrics.performance.deploymentStatus = '${{ steps.deploy-qa.outcome }}';
                 metrics.performance.environment = 'qa';
                 metrics.performance.bundleAnalysisStatus = '${{ steps.qa-bundle-analysis.outputs.qa_bundle_analysis_status }}';
-                
+
                 // Bundle metrics should now be complete from post-build analysis
                 console.log('QA Bundle metrics status:', metrics.bundle?.status || 'unknown');
-                
+
                 fs.writeFileSync('quality-metrics.json', JSON.stringify(metrics, null, 2));
                 console.log('QA metrics updated successfully');
               } catch (error) {
                 console.log('Warning: Could not update QA metrics:', error.message);
               }
-            "
+            " || echo "⚠️ Warning: Could not update QA quality metrics (non-critical)"
           fi
 
           if [ "${{ steps.deploy-qa.outcome }}" == "success" ]; then
@@ -1088,6 +1114,10 @@ jobs:
           NEXT_PUBLIC_SOURCE: merged_pr_fallback
         timeout-minutes: 15
 
+      - name: 📋 Copy staticwebapp.config.json to build output
+        if: steps.check-deploy.outputs.should_deploy == 'true'
+        run: cp staticwebapp.config.json out/
+
       - name: 🚀 Deploy to Dev Environment (Fallback)
         if: steps.check-deploy.outputs.should_deploy == 'true'
         id: deploy-dev-fallback
@@ -1096,10 +1126,13 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          app_location: ${{ env.APP_ARTIFACT_LOCATION }}
-          skip_app_build: true
+          app_location: ${{ env.APP_LOCATION }}
+          output_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          api_location: ""
           skip_api_build: true
           # Deploy to dev environment without deployment_environment to use production slot
+        env:
+          IS_STATIC_EXPORT: true
         timeout-minutes: 10
         continue-on-error: false
 

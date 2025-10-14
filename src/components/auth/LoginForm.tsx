@@ -8,33 +8,32 @@ import * as React from "react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import Box from "@mui/material/Box";
+import Alert from "@mui/material/Alert";
+import Paper from "@mui/material/Paper";
+import Stack from "@mui/material/Stack";
+import Button from "@mui/material/Button";
 import { visuallyHidden } from "@mui/utils";
+import Divider from "@mui/material/Divider";
+import TextField from "@mui/material/TextField";
+import IconButton from "@mui/material/IconButton";
+import Typography from "@mui/material/Typography";
+import FormControl from "@mui/material/FormControl";
+import FormHelperText from "@mui/material/FormHelperText";
+import InputAdornment from "@mui/material/InputAdornment";
 import CircularProgress from "@mui/material/CircularProgress";
-import {
-  Box,
-  Alert,
-  Paper,
-  Stack,
-  Button,
-  Divider,
-  TextField,
-  IconButton,
-  Typography,
-  FormControl,
-  FormHelperText,
-  InputAdornment,
-} from "@mui/material";
 
 import { validateLoginForm } from "./validateLoginForm";
 import { handleTokenResponse } from "../../utils/tokenManager";
-import { useLazyLoginQuery, useNativeLoginMutation } from "../../store/authApi";
 import { EyeIcon, DangerIcon, EyeOffIcon, ShieldIcon } from "../../assets/icons";
+import {
+  useLazyLoginQuery,
+  useMagickLinkMutation,
+  useNativeLoginMutation,
+} from "../../store/authApi";
 
-export default function LoginForm({
-  showPasswordField,
-  setShowPasswordField,
-  successMessage,
-}: LoginFormProps) {
+const LoginForm = ({ showPasswordField, setShowPasswordField, successMessage }: LoginFormProps) => {
+  const [magicklink] = useMagickLinkMutation();
   const [login, { isLoading: ssoLoading }] = useLazyLoginQuery();
   const [nativeLogin, { isLoading: nativeLoginLoading, error: nativeLoginError }] =
     useNativeLoginMutation();
@@ -47,7 +46,9 @@ export default function LoginForm({
   const router = useRouter();
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setFormData((prev: LoginFormData) => ({ ...prev, [name]: value }));
+    const sanitizedValue =
+      name === "email" || name === "password" ? value?.replace(/\s+/g, "") : value;
+    setFormData((prev: LoginFormData) => ({ ...prev, [name]: sanitizedValue }));
   };
 
   const handlePasswordVisibilityToggle = () => {
@@ -72,8 +73,17 @@ export default function LoginForm({
     // Clear any existing errors
     setErrors({});
 
-    // Then redirect to magic link page with email
-    router.push(`/auth/magic-link?email=${encodeURIComponent(email)}`);
+    try {
+      // Make API call to request magic link
+      await magicklink(JSON.stringify({ email })).unwrap();
+
+      // Redirect to magic link page with success flag
+      router.push(`/auth/magic-link?email=${encodeURIComponent(email)}&success=true`);
+    } catch (error: any) {
+      setErrors({
+        login: error?.data?.detail || "Failed to send magic link. Please try again.",
+      });
+    }
   };
   const handleMicrosoftLogin = async () => {
     try {
@@ -90,10 +100,10 @@ export default function LoginForm({
     }
   };
 
-  const handleForgotPassword = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleForgotPassword = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     // TODO: Implement forgot password functionality
-    router.push("/forgot-password");
+    router.push("/forgot-password?email=" + encodeURIComponent(formData.email.trim()));
   };
 
   const handleCloseLoginError = () => {
@@ -187,12 +197,18 @@ export default function LoginForm({
 
     return (
       <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-        <div
+        <Button
           className="self-stretch text-right justify-start text-text-primary text-sm font-normal leading-snug cursor-pointer hover:underline"
           onClick={handleForgotPassword}
+          sx={{
+            "&:hover": {
+              backgroundColor: "transparent",
+            },
+          }}
+          disableRipple
         >
           Forgot password?
-        </div>
+        </Button>
       </Box>
     );
   };
@@ -379,7 +395,17 @@ export default function LoginForm({
           color="secondary"
           fullWidth
           size="large"
-          startIcon={<Image src="/starticon.svg" alt="" width={24} height={24} />}
+          startIcon={
+            <Box
+              sx={{
+                display: 'flex',
+                filter: (ssoLoading || nativeLoginLoading) ? 'grayscale(100%)' : 'none',
+                opacity: (ssoLoading || nativeLoginLoading) ? 0.5 : 1
+              }}
+            >
+              <Image src="/starticon.svg" alt="" width={24} height={24} />
+            </Box>
+          }
           onClick={handleMicrosoftLogin}
           disabled={ssoLoading || nativeLoginLoading}
         >
@@ -388,4 +414,5 @@ export default function LoginForm({
       </Stack>
     </Paper>
   );
-}
+};
+export default LoginForm;

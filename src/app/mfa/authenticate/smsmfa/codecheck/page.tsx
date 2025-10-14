@@ -1,92 +1,121 @@
 "use client";
 
+import styles from './page.module.css';
+
 import { useRouter, useSearchParams } from "next/navigation";
 import React, {
   useRef,
+  type JSX,
   Suspense,
   useState,
   useEffect,
+  useCallback,
   type FormEvent,
   type KeyboardEvent,
 } from "react";
 
-import { Box, Alert, Stack, Button, Skeleton, TextField, Typography } from "@mui/material";
+import Box from "@mui/material/Box";
+import Stack from "@mui/material/Stack";
+import Alert from "@mui/material/Alert";
+import Button from "@mui/material/Button";
+import Skeleton from "@mui/material/Skeleton";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 
 import { StartIcon } from "../../../../../assets/icons";
-import { createApiHeaders, handleTokenResponse } from "../../../../../utils/tokenManager";
+import { formatTime } from "../../../../../utils/helper";
+import { handleTokenResponse } from "../../../../../utils/tokenManager";
+import { useAuthMfaMutation, useMfaVerifyMutation } from "../../../../../store/authApi";
+import { CODE_LENGTH, STORAGE_KEYS, TIMER_CONFIG } from "../../../../../utils/Constants";
+import { useTimer, useResendTimer, useLocalStorageState } from "../../../../../hooks/auth/index";
 
-function SMSMfaPageContent() {
+const SMSMfaPageContent: React.FC = (): JSX.Element => {
+  const [authMfa, { isLoading: isAuthMfaLoading }] = useAuthMfaMutation();
+  const [mfaVerify, { isLoading: isMfaVerifyLoading }] = useMfaVerifyMutation();
   const searchParams = useSearchParams();
   const phoneNumber = searchParams.get("phone") || "+32 873642374";
-  const CODE_LENGTH = 6;
   const [code, setCode] = useState<string[]>(Array(CODE_LENGTH).fill(""));
   const [error, setError] = useState<string | null>(null);
-  const [timer, setTimer] = useState<number>(600); // 10 minutes in seconds
-  const [verifyCode, setVerifyCode] = useState<boolean>(true);
   const [showTooManyTries, setShowTooManyTries] = useState<boolean>(false);
   const [failedAttempts, setFailedAttempts] = useState<number>(0);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isVerifying, setIsVerifying] = useState<boolean>(false);
-  const [isResending, setIsResending] = useState<boolean>(false);
   const [apiMessage, setApiMessage] = useState<string | null>(null);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
   const hasRequestedOnLoadRef = useRef(false);
   const router = useRouter();
 
-  useEffect(() => {
-    // Prevent multiple calls using useRef
-    if (hasRequestedOnLoadRef.current || !phoneNumber) {
-      return;
-    }
+  // Custom hooks for timer management
+  const mainTimer = useTimer(
+    TIMER_CONFIG.SMS_MFA_EXPIRY_TIME,
+    STORAGE_KEYS.SMS_MFA_TIMESTAMP
+  );
+  const resendTimer = useResendTimer(STORAGE_KEYS.SMS_MFA_RESEND_TIMER);
+  const localStorageState = useLocalStorageState(
+    STORAGE_KEYS.SMS_MFA_INITIAL_REQUEST,
+    STORAGE_KEYS.SMS_MFA_PAGE_LOADS
+  );
 
-    const initiatePhoneMfa = async () => {
-      try {
-        hasRequestedOnLoadRef.current = true;
-        setIsLoading(true);
-        const headers = createApiHeaders(true, true);
-
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_BASE}/auth/mfa/authenticate/phone/initiate`,
-          {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              phone: phoneNumber,
-            }),
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error(`Failed to initiate phone MFA: ${response.status}`);
-        }
-
-        const data = await response.json();
-        console.log("Phone MFA initiated:", data);
-
-        // Store the dynamic message from API response
-        if (data.message) {
-          setApiMessage(data.message);
-        }
-
-        setTimer(600);
-      } catch (initError) {
-        console.error("Error initiating phone MFA:", initError);
-        setError("Failed to send verification SMS. Please try again.");
-      } finally {
-        setIsLoading(false);
+  const initiatePhoneMfa = useCallback(async (resend: boolean = false) => {
+    if (resend) resendTimer.startResendTimer();
+    try {
+      hasRequestedOnLoadRef.current = true;
+      const response = await authMfa({
+        payload: JSON.stringify({
+          phone: phoneNumber,
+        }),
+        mode: 'phone',
+      }).unwrap();
+      // Store the dynamic message from API response
+      if (response.message) {
+        setApiMessage(response.message);
       }
-    };
 
-    initiatePhoneMfa();
-  }, [phoneNumber]);
+      setError(null); // Clear any previous errors
+      mainTimer.saveTimestamp();
+      mainTimer.startTimer(TIMER_CONFIG.SMS_MFA_EXPIRY_TIME);
+      resendTimer.startResendTimer();
+      localStorageState.markInitialRequestAsMade();
+      localStorageState.clearPageLoadCount();
+    } catch (initError) {
+      console.error("Error initiating phone MFA:", initError);
+      setError("Failed to send verification SMS. Please try again.");
+      if (resend) resendTimer.stopResendTimer();
+    }
+  }, [phoneNumber, mainTimer, resendTimer, localStorageState, authMfa]);
+  useEffect(() => {
+    const remainingTime = mainTimer.getRemainingTime();
+    const remainingResendTime = resendTimer.getRemainingResendTime();
+    const pageLoadCount = localStorageState.getPageLoadCount();
+
+    localStorageState.incrementPageLoadCount();
+
+    if (remainingTime > 0) {
+      mainTimer.startTimer(remainingTime);
+    } else {
+      if (pageLoadCount === 1) {
+        localStorageState.clearInitialRequestFlag();
+      }
+    }
+
+    if (remainingResendTime > 0) {
+      resendTimer.setResendTimerValue(remainingResendTime);
+    }
+
+    if (
+      !hasRequestedOnLoadRef.current &&
+      phoneNumber &&
+      !localStorageState.hasInitialRequestBeenMade()
+    ) {
+      initiatePhoneMfa(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (timer > 0) {
-      const interval = setInterval(() => setTimer((t) => t - 1), 1000);
-      return () => clearInterval(interval);
+    if (mainTimer.timer === 0) {
+      setError("Code expired. Please request a new one.");
+      localStorageState.clearInitialRequestFlag();
+      localStorageState.clearPageLoadCount();
     }
-    return undefined;
-  }, [timer]);
+  }, [mainTimer.timer, localStorageState]);
 
   const handleChange = (idx: number, value: string) => {
     if (!/^\d?$/.test(value)) return;
@@ -134,39 +163,26 @@ function SMSMfaPageContent() {
 
     const otpCode = code.join("");
     if (otpCode.length !== CODE_LENGTH) {
-      setError("Please enter the complete 6-digit code.");
+      setError("Please enter the complete 6-digit code");
       return;
     }
 
     try {
-      setIsVerifying(true);
       setError(null);
-      setVerifyCode(false);
 
-      const headers = createApiHeaders(true, true);
-
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE}/auth/mfa/authenticate/phone/verify`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            code: otpCode,
-            phone: phoneNumber,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
+      const response = await mfaVerify({
+        payload: JSON.stringify({
+          code: otpCode,
+          phone: phoneNumber,
+        }),
+        mode: 'phone'
+      },
+      ).unwrap();
 
       // Handle token response if verification is successful
-      if (result.result === "success" && (result.session_token || result.temp_token)) {
+      if (response.result === "success" && (response.session_token || response.temp_token)) {
         const { shouldRedirect, redirectUrl } = await handleTokenResponse(
-          result
+          response
         );
         if (shouldRedirect) {
           router.push(redirectUrl!);
@@ -174,23 +190,32 @@ function SMSMfaPageContent() {
         }
       }
       // Check if verification was successful (for cases without tokens)
-      if (result.success || result.verified || result.result === "success") {
+      if (response.success || response.verified || response.result === "success") {
         // Clear any existing errors
         setError(null);
         setFailedAttempts(0);
         setShowTooManyTries(false);
 
+        // Clear timers and storage
+        mainTimer.clearTimestamp();
+        resendTimer.stopResendTimer();
+        localStorageState.clearInitialRequestFlag();
+        localStorageState.clearPageLoadCount();
+
         // Redirect to MFA registration selection to continue setup
         router.push("/dashboard");
       } else {
         // Handle verification failure from API response
-        throw new Error(result.message || result.detail || "Verification failed");
+        throw new Error(response.message || response.detail || "Verification failed");
       }
     } catch (verifyError) {
       console.error("Phone MFA verification error:", verifyError);
 
       const newFailedAttempts = failedAttempts + 1;
       setFailedAttempts(newFailedAttempts);
+
+      // Clear the OTP code after wrong verification
+      setCode(Array(CODE_LENGTH).fill(""));
 
       if (newFailedAttempts >= 4) {
         setShowTooManyTries(true);
@@ -199,63 +224,21 @@ function SMSMfaPageContent() {
         setError(
           verifyError instanceof Error
             ? verifyError.message
-            : "Verification failed. Please check the code provided and try again."
+            : "Verification failed"
         );
       }
-    } finally {
-      setIsVerifying(false);
     }
   };
 
   const handleResend = async () => {
-    try {
-      setIsResending(true);
-      setError(null);
-
-      const headers = createApiHeaders(true, true);
-
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE}/auth/mfa/authenticate/phone/initiate`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            phone: phoneNumber,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`Failed to resend SMS: ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log("Phone MFA resent:", data);
-
-      // Store the dynamic message from API response
-      if (data.message) {
-        setApiMessage(data.message);
-      }
-
-      setTimer(600);
-    } catch (resendError) {
-      console.error("Error resending phone MFA:", resendError);
-      setError("Failed to resend verification SMS. Please try again.");
-    } finally {
-      setIsResending(false);
-    }
+    setCode(Array(CODE_LENGTH).fill(""));
+    setFailedAttempts(0);
+    setShowTooManyTries(false);
+    await initiatePhoneMfa(true);
   };
 
   const handleCloseLoginError = () => {
     setError(null);
-  };
-
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60)
-      .toString()
-      .padStart(2, "0");
-    const s = (seconds % 60).toString().padStart(2, "0");
-    return `${m}:${s}`;
   };
 
   const handleContactSupport = () => {
@@ -263,27 +246,25 @@ function SMSMfaPageContent() {
     console.log("Contact support clicked");
   };
 
+  console.log("API Message:", resendTimer.resendTimer);
   return (
     <Box
+      className={styles.container}
       sx={{
-        maxWidth: 420,
-        padding: "40px 24px",
-        borderRadius: 2,
         bgcolor: "background.paper",
-        boxShadow: 3,
       }}
     >
-      {isLoading ? (
-        <Box sx={{ mb: 3 }}>
-          <Skeleton variant="text" width="85%" height={20} sx={{ mx: "auto", mb: 1 }} />
-          <Skeleton variant="text" width="70%" height={20} sx={{ mx: "auto" }} />
+      {isAuthMfaLoading ? (
+        <Box className={styles.skeletonContainer}>
+          <Skeleton variant="text" width="85%" height={20} className={styles.skeletonText} />
+          <Skeleton variant="text" width="70%" height={20} className={styles.skeletonText} />
         </Box>
       ) : (
         <>
-          <Typography variant="h6" align="center" fontWeight={700} height={30} mb={1.5}>
+          <Typography variant="h6" align="center" className={styles.title}>
             Please check your messages!
           </Typography>
-          <Typography variant="body2" align="center" mb={3}>
+          <Typography variant="body2" align="center" className={styles.messageText}>
             {(apiMessage ?? "").split("\n").map((line, index) => (
               <React.Fragment key={index}>
                 {line}
@@ -294,9 +275,9 @@ function SMSMfaPageContent() {
         </>
       )}
       <form onSubmit={handleVerify}>
-        <Stack spacing={3}>
+        <Stack className={styles.formStack}>
           {error && (
-            <Alert severity="error" sx={{ fontSize: "0.875rem" }} onClose={handleCloseLoginError}>
+            <Alert severity="error" className={styles.errorAlert} onClose={handleCloseLoginError}>
               {error}
             </Alert>
           )}
@@ -304,24 +285,11 @@ function SMSMfaPageContent() {
           {showTooManyTries && (
             <Alert
               severity="error"
+              className={styles.tooManyTriesAlert}
               sx={{
-                position: "relative",
-                zIndex: 0,
-                pointerEvents: "auto",
-                fontSize: "0.875rem",
                 background: "var(--background-paper, #FFF)",
                 color: "#333333",
                 border: "1px solid #FFEDED",
-                borderRadius: "var(--snackbar-radius, 12px)",
-                padding:
-                  "var(--snackbar-py, 4px) 0 var(--snackbar-py, 4px) var(--snackbar-pl, 4px)",
-                height: "56px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: "var(--snackbar-spacing, 12px)",
-                boxShadow:
-                  "var(--z8-x, 0) var(--z8-y, 8px) var(--z8-blur, 16px) var(--z8-spread, 0) var(--shadow-16, rgba(145, 158, 171, 0.16))",
                 "& .MuiAlert-icon": {
                   backgroundColor: "rgba(255, 86, 48, 0.08)",
                   color: "#DC3545",
@@ -344,16 +312,11 @@ function SMSMfaPageContent() {
                 },
               }}
             >
-              <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>
+              <Box className={styles.tooManyTriesContent}>
                 <Typography
+                  className={styles.tooManyTriesText}
                   sx={{
                     color: "#1C252E",
-                    fontFamily: "Inter",
-                    fontSize: "14px",
-                    fontStyle: "normal",
-                    fontWeight: 600,
-                    letterSpacing: "0",
-                    flex: "1 0 0",
                   }}
                 >
                   Too many failed tries
@@ -361,23 +324,11 @@ function SMSMfaPageContent() {
               </Box>
               <Button
                 onClick={handleContactSupport}
+                className={styles.contactSupportButton}
                 sx={{
                   backgroundColor: "rgba(255, 86, 48, 0.16)",
                   color: "#B02B37",
-                  border: "none",
-                  borderRadius: "8px",
-                  padding: "8px 12px",
-                  fontSize: "14px",
-                  fontWeight: 600,
-                  textTransform: "none",
-                  minWidth: "121px",
-                  minHeight: "30px",
-                  height: "30px",
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  gap: "8px",
-                  marginRight: "12px",
+                  borderColor: "transparent",
                   "&:hover": {
                     backgroundColor: "rgba(255, 86, 48, 0.24)",
                     borderColor: "transparent",
@@ -389,36 +340,22 @@ function SMSMfaPageContent() {
             </Alert>
           )}
 
-          {verifyCode && (
-            <Box
-              sx={{
-                bgcolor: "rgba(255, 152, 0, 0.16)",
-                color: "#FF9800",
-                borderRadius: 2,
-                height: 70,
-                fontWeight: 600,
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "center",
-                alignItems: "center",
-                gap: 1,
-              }}
-            >
-              <Typography component="span" sx={{ fontWeight: 600 }}>
-                Code expires in
-              </Typography>
-              <Typography component="span" sx={{ fontWeight: 700, fontSize: 22 }}>
-                {formatTime(timer)}
-              </Typography>
-            </Box>
-          )}
-
           <Box
-            display="flex"
-            justifyContent="center"
-            gap={2}
-            sx={{ position: "relative", zIndex: 3 }}
+            className={styles.timerBox}
+            sx={{
+              bgcolor: "rgba(255, 152, 0, 0.16)",
+              color: "#FF9800",
+            }}
           >
+            <Typography component="span" className={styles.timerLabel}>
+              Code expires in
+            </Typography>
+            <Typography component="span" className={styles.timerValue}>
+              {formatTime(mainTimer.timer)}
+            </Typography>
+          </Box>
+
+          <Box className={styles.inputContainer}>
             {code.map((digit, idx) => (
               <TextField
                 key={idx}
@@ -428,10 +365,9 @@ function SMSMfaPageContent() {
                 inputRef={(el) => (inputsRef.current[idx] = el)}
                 onChange={(e) => handleChange(idx, e.target.value)}
                 onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => handleKeyDown(idx, e)}
-                disabled={isVerifying || isResending}
+                disabled={isMfaVerifyLoading || isAuthMfaLoading}
+                className={styles.inputField}
                 sx={{
-                  width: 48.664,
-                  height: 48.664,
                   "& .MuiOutlinedInput-root": {
                     height: 48.664,
                     width: 48.664,
@@ -457,16 +393,8 @@ function SMSMfaPageContent() {
                 }}
                 inputProps={{
                   maxLength: 1,
+                  className: styles.inputProps,
                   style: {
-                    width: "100%",
-                    height: "100%",
-                    textAlign: "center",
-                    fontSize: 24,
-                    fontWeight: 600,
-                    borderRadius: 8,
-                    padding: 0,
-                    border: "none",
-                    outline: "none",
                     color: "#1C252E",
                   },
                   "aria-label": `Digit ${idx + 1}`,
@@ -476,23 +404,17 @@ function SMSMfaPageContent() {
             ))}
           </Box>
 
-          <Stack spacing={1}>
+          <Stack className={styles.buttonStack}>
             <Button
               type="submit"
               variant="contained"
               color="primary"
               fullWidth
-              disabled={isVerifying || isResending || code?.includes("") || timer === 0}
+              disabled={isMfaVerifyLoading || isAuthMfaLoading || code?.includes("") || mainTimer.timer === 0}
               disableRipple
-              sx={{
-                position: "relative",
-                zIndex: 2,
-                fontWeight: "bold",
-                height: 48,
-                textTransform: "none",
-              }}
+              className={styles.verifyButton}
             >
-              {isVerifying ? "Verifying..." : "Verify"}
+              {isMfaVerifyLoading ? "Verifying..." : "Verify"}
             </Button>
 
             <Button
@@ -500,20 +422,23 @@ function SMSMfaPageContent() {
               color="inherit"
               fullWidth
               onClick={handleResend}
-              disabled={isVerifying || isResending}
+              disabled={resendTimer.resendTimer > 0 || isMfaVerifyLoading || isAuthMfaLoading}
               disableRipple
-              startIcon={<StartIcon sx={{ color: (isVerifying || isResending) ? "text.disabled" : "inherit" }} />}
+              startIcon={
+                <StartIcon
+                  sx={{ color: (resendTimer.resendTimer > 0 || isMfaVerifyLoading || isAuthMfaLoading) ? "action.disabled" : "inherit" }}
+                />
+              }
+              className={styles.resendButton}
               sx={{
-                position: "relative",
-                zIndex: 1,
-                minHeight: 44,
-                height: 48,
                 color: "text.primary",
-                fontWeight: 700,
-                fontSize: 15,
               }}
             >
-              {isResending ? "Sending..." : "Resend code"}
+              {isAuthMfaLoading
+                ? "Sending..."
+                : resendTimer.resendTimer > 0
+                  ? `Resend in ${formatTime(resendTimer.resendTimer)}`
+                  : "Resend code"}
             </Button>
           </Stack>
         </Stack>
@@ -522,28 +447,20 @@ function SMSMfaPageContent() {
   );
 }
 
-export default function SMSMfaPage() {
-  return (
-    <Suspense
-      fallback={
-        <Box
-          sx={{
-            maxWidth: 420,
-            padding: "40px 24px",
-            borderRadius: 2,
-            bgcolor: "background.paper",
-            boxShadow: 3,
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            minHeight: 200,
-          }}
-        >
-          <Typography>Loading...</Typography>
-        </Box>
-      }
-    >
-      <SMSMfaPageContent />
-    </Suspense>
-  );
-}
+const SMSMfaPage: React.FC = (): JSX.Element => (
+  <Suspense
+    fallback={
+      <Box
+        className={styles.suspenseFallback}
+        sx={{
+          bgcolor: "background.paper",
+        }}
+      >
+        <Typography>Loading...</Typography>
+      </Box>
+    }
+  >
+    <SMSMfaPageContent />
+  </Suspense>
+)
+export default SMSMfaPage

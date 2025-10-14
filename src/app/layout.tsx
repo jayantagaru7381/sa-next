@@ -5,8 +5,8 @@ import type { Metadata } from "next";
 import InitColorSchemeScript from "@mui/material/InitColorSchemeScript";
 import { AppRouterCacheProvider } from "@mui/material-nextjs/v15-appRouter";
 
-import { themeConfig, ThemeProvider } from "../theme";
-import { ReduxProvider } from "../store/ReduxProvider";
+import { themeConfig, ThemeProvider } from "src/theme";
+import { ReduxProvider } from "src/store/ReduxProvider";
 
 export const metadata: Metadata = {
   title: "Source Advisors",
@@ -27,15 +27,13 @@ export default function RootLayout({
           modeStorageKey={themeConfig.modeStorageKey}
           attribute={themeConfig.cssVariables.colorSchemeSelector}
         />
-        <ReduxProvider>
+         <ReduxProvider>
           <AppRouterCacheProvider options={{ key: "css", enableCssLayer: true }}>
             <ThemeProvider
               defaultMode={themeConfig.defaultMode}
               modeStorageKey={themeConfig.modeStorageKey}
             >
-              {/* <ClientAppFrame> */}
               {children}
-              {/* </ClientAppFrame> */}
             </ThemeProvider>
           </AppRouterCacheProvider>
         </ReduxProvider>

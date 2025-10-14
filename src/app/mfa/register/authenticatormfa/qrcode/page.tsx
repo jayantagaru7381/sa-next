@@ -1,59 +1,47 @@
 "use client";
 
+import type { JSX} from "react";
+
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 
-import Box from "@mui/material/Box";
-import Stack from "@mui/material/Stack";
-import Button from "@mui/material/Button";
-import Divider from "@mui/material/Divider";
-import Skeleton from "@mui/material/Skeleton";
-import Typography from "@mui/material/Typography";
-
-import { createApiHeaders } from "src/utils/tokenManager";
+import { Box, Stack, Button, Divider, Skeleton, Typography } from "@mui/material";
 
 import ProgressBar from "src/components/common/ProgressBar";
 
+import { useAuthMfaRegisterMutation } from "../../../../../store/authApi";
+
 const QRCode = dynamic(() => import("react-qr-code"), { ssr: false });
 
-export default function AuthenticatorSetupStep() {
+const AuthenticatorSetupStep: React.FC = (): JSX.Element => {
+  const [authMfaRegister, { isLoading }] = useAuthMfaRegisterMutation();
   const [uri, setUri] = useState("");
   const [secret, setSecret] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
 
   const formatSecret = (secretKey: string | undefined | null): string => {
     if (!secretKey || typeof secretKey !== "string") return "";
     return secretKey.replace(/(.{4})/g, "$1-").replace(/-$/, "");
   };
+  const init = async () => {
+    try {
+      const response = await authMfaRegister({
+        payload: JSON.stringify({}),
+        mode: 'authenticator_app'
+      }).unwrap()
 
+      setUri(response?.qr_code_url || "");
+      setSecret(response?.manual_key || "");
+
+    } catch (err) {
+      console.error("Failed to load QR code:", err);
+      setUri("");
+      setSecret("");
+    }
+  }
   useEffect(() => {
-    setIsLoading(true);
-
-    const headers = createApiHeaders(true, true);
-    fetch(`${process.env.NEXT_PUBLIC_API_BASE}/auth/mfa/register/authenticator_app/initiate`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({}),
-    })
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error(`API request failed with status: ${res.status}`);
-        }
-        return res.json();
-      })
-      .then((data) => {
-        setUri(data.qr_code_url || "");
-        setSecret(data.manual_key || "");
-        setIsLoading(false);
-      })
-      .catch((err) => {
-        console.error("Failed to load QR code:", err);
-        setUri("");
-        setSecret("");
-        setIsLoading(false);
-      });
+    init()
   }, []);
 
   return (
@@ -196,3 +184,4 @@ export default function AuthenticatorSetupStep() {
     </Box>
   );
 }
+export default AuthenticatorSetupStep

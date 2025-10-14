@@ -1,104 +1,65 @@
 "use client";
 
-import type { JSX } from 'react';
-import type { MagicLinkResponse } from '../../types/auth';
+import type { JSX } from "react";
 
-import { useRouter, useSearchParams } from 'next/navigation';
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import { useRouter, useSearchParams } from "next/navigation";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 
-import { Box, Alert, Button, TextField, Typography } from "@mui/material";
+import Box from "@mui/material/Box";
+import Alert from "@mui/material/Alert";
+import Button from "@mui/material/Button";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 
 import { formatTime } from "../../utils/helper";
-import { StartIcon, LeftArrowIcon } from '../../assets/icons';
-import { TIMER_CONFIG, STORAGE_KEYS } from "../../utils/Constants";
-import { useTimer, useResendTimer, useLocalStorageState } from '../../hooks/auth/index';
+import { useMagickLinkMutation } from '../../store/authApi';
+import { StartIcon, LeftArrowIcon } from "../../assets/icons";
+import { STORAGE_KEYS, TIMER_CONFIG } from "../../utils/Constants";
+import { useTimer, useResendTimer, useLocalStorageState } from "../../hooks/auth/index";
 
-// API service
-const magicLinkService = {
-  requestMagicLink: async (email: string): Promise<MagicLinkResponse> => {
-    const API_BASE = process.env.NEXT_PUBLIC_API_BASE!;
-    const response = await fetch(`${API_BASE}/auth/magic_link/request`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email }),
-    });
-
-    const responseData = await response.json().catch(() => ({} as any));
-    const isRateLimited = response.ok && responseData?.detail === 'Rate limit exceeded';
-    const ok = response.ok && !isRateLimited;
-    const detail = responseData?.detail || responseData?.message;
-
-    return { ok, detail };
-  },
-};
 
 const MagicLink: React.FC = (): JSX.Element => {
-  // State
+  const [magicklink, { isLoading: isMagicklinkLoading }] = useMagickLinkMutation();
   const [fpError, setFpError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Refs
   const hasRequestedOnLoadRef = useRef(false);
+  const hasSetupSuccessTimerRef = useRef(false);
 
-  // Router and search params
   const router = useRouter();
   const searchParams = useSearchParams();
-  const emailFromUrl = searchParams.get('email') || '';
+  const emailFromUrl = searchParams.get("email") || "";
+  const successFlag = searchParams.get("success") === "true";
   const [formData, setFormData] = useState(emailFromUrl);
 
   // Custom hooks
-  const mainTimer = useTimer(TIMER_CONFIG.MAGIC_LINK_EXPIRY_TIME, STORAGE_KEYS.MAGIC_LINK_TIMESTAMP);
+  const mainTimer = useTimer(
+    TIMER_CONFIG.MAGIC_LINK_EXPIRY_TIME,
+    STORAGE_KEYS.MAGIC_LINK_TIMESTAMP
+  );
   const resendTimer = useResendTimer();
   const localStorageState = useLocalStorageState();
+
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData(event.target.value);
+    const sanitized = event.target.value?.replace(/\s+/g, "")?.toLowerCase();
+    setFormData(sanitized);
+    // Clear errors when user types
+    if (error) setError(null);
+    if (fpError) setFpError(null);
   };
 
   const handleCloseLoginError = () => {
     setError(null);
+    setFpError(null);
   };
 
-  const handleResendCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    setError(null);
-    resendTimer.startResendTimer();
-    setIsLoading(true);
-
+  const makeInitialApiCall = useCallback(async (resend: boolean) => {
+    if (resend) resendTimer.startResendTimer();
     try {
-      const email = formData.trim();
-      const { ok, detail } = await magicLinkService.requestMagicLink(email);
-
-      if (!ok) {
-        setError(detail || "Failed to send magic link. Please try again.");
-        resendTimer.stopResendTimer();
-        return;
-      }
-      setError(null);
-      setFpError(null);
-      mainTimer.saveTimestamp();
-      mainTimer.resetTimer(TIMER_CONFIG.MAGIC_LINK_EXPIRY_TIME);
-      localStorageState.markInitialRequestAsMade();
-      localStorageState.clearPageLoadCount();
-    } catch {
-      setError("Failed to send magic link. Please try again.");
-      resendTimer.stopResendTimer();
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const makeInitialApiCall = useCallback(async () => {
-    try {
+      const email = resend ? formData.trim() : emailFromUrl;
       hasRequestedOnLoadRef.current = true;
-      const { ok, detail } = await magicLinkService.requestMagicLink(emailFromUrl);
-
-      if (!ok) {
-        setError(detail || 'Failed to send magic link. Please try again.');
-        return;
-      }
-
+      await magicklink({ email }).unwrap();
       setError(null);
       setFpError(null);
       mainTimer.saveTimestamp();
@@ -106,8 +67,9 @@ const MagicLink: React.FC = (): JSX.Element => {
       resendTimer.startResendTimer();
       localStorageState.markInitialRequestAsMade();
       localStorageState.clearPageLoadCount();
-    } catch {
-      setError('Failed to send magic link. Please try again.');
+    } catch (err: any) {
+      setError(err?.data?.detail || "Failed to send magic link. Please try again.");
+      if (resend) resendTimer.stopResendTimer();
     }
   }, [emailFromUrl, mainTimer, localStorageState]);
 
@@ -130,10 +92,23 @@ const MagicLink: React.FC = (): JSX.Element => {
       resendTimer.setResendTimerValue(remainingResendTime);
     }
 
-    if (!hasRequestedOnLoadRef.current && emailFromUrl && !localStorageState.hasInitialRequestBeenMade()) {
-      makeInitialApiCall();
+    if (
+      !hasRequestedOnLoadRef.current &&
+      emailFromUrl &&
+      !localStorageState.hasInitialRequestBeenMade() &&
+      !successFlag
+    ) {
+      makeInitialApiCall(false);
+    } else if (successFlag && !hasSetupSuccessTimerRef.current) {
+      // If success flag is present and we haven't set up the timer yet, set up the timer and state without making API call
+      hasSetupSuccessTimerRef.current = true;
+      mainTimer.saveTimestamp();
+      mainTimer.startTimer(TIMER_CONFIG.MAGIC_LINK_EXPIRY_TIME);
+      resendTimer.startResendTimer();
+      localStorageState.markInitialRequestAsMade();
+      localStorageState.clearPageLoadCount();
     }
-  }, [emailFromUrl, mainTimer, resendTimer, localStorageState, makeInitialApiCall]);
+  }, []);
 
   useEffect(() => {
     if (mainTimer.timer === 0) {
@@ -141,15 +116,19 @@ const MagicLink: React.FC = (): JSX.Element => {
       localStorageState.clearPageLoadCount();
     }
   }, [mainTimer.timer, localStorageState]);
+
+  // Optional: Restore resend timer from storage on mount (if you want to persist resend cooldown)
+  useEffect(() => {
+    const remainingResendTime = resendTimer.getRemainingResendTime();
+    if (remainingResendTime > 0) {
+      resendTimer.setResendTimerValue(remainingResendTime);
+    }
+  }, [resendTimer]);
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, width: '100%' }}>
-      {fpError && (
-        <Alert
-          severity="error"
-          sx={{ fontSize: '0.875rem' }}
-          onClose={handleCloseLoginError}
-        >
-          {fpError}
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 3, width: "100%" }}>
+      {(fpError || error) && (
+        <Alert severity="error" sx={{ fontSize: "0.875rem" }} onClose={handleCloseLoginError}>
+          {fpError || error}
         </Alert>
       )}
 
@@ -161,8 +140,8 @@ const MagicLink: React.FC = (): JSX.Element => {
         value={formData}
         onChange={handleInputChange}
         error={!!error}
+        disabled={isMagicklinkLoading}
       />
-
       <Box
         sx={{
           bgcolor: "rgba(255, 152, 0, 0.16)",
@@ -177,32 +156,25 @@ const MagicLink: React.FC = (): JSX.Element => {
           gap: 1,
         }}
       >
-        <Typography sx={{ fontWeight: 600 }}>
-          Link expires in
-        </Typography>
+        <Typography sx={{ fontWeight: 600 }}>Link expires in</Typography>
         <Typography sx={{ fontWeight: 700, fontSize: 22 }}>
           {formatTime(mainTimer.timer)}
         </Typography>
       </Box>
-
       <Button
         variant="outlined"
         color="inherit"
         fullWidth
         startIcon={
-          <StartIcon
-            sx={{ color: resendTimer.resendTimer > 0 ? 'action.disabled' : 'inherit' }}
-          />
+          <StartIcon sx={{ color: resendTimer.resendTimer > 0 ? "action.disabled" : "inherit" }} />
         }
-        disabled={resendTimer.resendTimer > 0 || isLoading}
-        onClick={handleResendCode}
-        sx={{
-          minHeight: 48,
-          height: 48,
-          padding: "8px 16px",
-        }}
+        disabled={resendTimer.resendTimer > 0 || isMagicklinkLoading || !formData.trim()}
+        onClick={() => makeInitialApiCall(true)}
+        sx={{ minHeight: 48, height: 48, padding: "8px 16px" }}
       >
-        {resendTimer.resendTimer > 0 ? `Resend in ${formatTime(resendTimer.resendTimer)}` : `Resend link`}
+        {resendTimer.resendTimer > 0
+          ? `Resend in ${formatTime(resendTimer.resendTimer)}`
+          : `Resend link`}
       </Button>
 
       <Typography
@@ -211,7 +183,7 @@ const MagicLink: React.FC = (): JSX.Element => {
           fontSize: 14,
           fontWeight: 400,
           color: "#637381",
-          textAlign: 'center',
+          textAlign: "center",
           lineHeight: 1.4,
         }}
       >
@@ -220,8 +192,8 @@ const MagicLink: React.FC = (): JSX.Element => {
 
       <Box textAlign="center">
         <Button
-          onClick={() => router.push('/')}
-          disabled={isLoading}
+          onClick={() => router.push("/")}
+          disabled={isMagicklinkLoading}
           sx={{
             textDecoration: "none",
             lineHeight: "22px",
@@ -237,15 +209,15 @@ const MagicLink: React.FC = (): JSX.Element => {
             padding: "0 !important",
             "&:hover": {
               backgroundColor: "transparent",
-            }
+            },
           }}
         >
-          <LeftArrowIcon sx={{ color: isLoading ? 'action.disabled' : 'inherit' }} />
+          <LeftArrowIcon sx={{ color: isMagicklinkLoading ? "action.disabled" : "inherit" }} />
           Return to login
         </Button>
       </Box>
     </Box>
   );
-}
+};
 
 export default MagicLink;

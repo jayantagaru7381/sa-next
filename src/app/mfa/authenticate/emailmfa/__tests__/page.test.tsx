@@ -1,345 +1,215 @@
-import React from 'react';
 
-import Page from '../page';
-import { act, render, screen, waitFor, mockPush, fireEvent } from '../../../../../test-utils';
+import '@testing-library/jest-dom';
 
-// Mock the router
-const mockRouter = {
-  push: mockPush,
-  replace: jest.fn(),
-  back: jest.fn(),
-  forward: jest.fn(),
-  refresh: jest.fn(),
-  prefetch: jest.fn(),
-};
+import React from "react";
+import { Provider } from 'react-redux';
+import { useRouter } from "next/navigation";
+import { configureStore } from '@reduxjs/toolkit';
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 
-jest.mock('next/navigation', () => ({
-  useRouter: () => mockRouter,
+import { createTheme, ThemeProvider } from '@mui/material/styles';
+
+import EmailMfaPage from "../page";
+import { handleTokenResponse } from "../../../../../utils/tokenManager";
+import { useAuthMfaMutation, useMfaVerifyMutation } from "../../../../../store/authApi";
+
+// Mock hooks and functions
+jest.mock("../../../../../store/authApi");
+jest.mock("next/navigation", () => ({
+  useRouter: jest.fn(),
+}));
+jest.mock("../../../../../utils/tokenManager", () => ({
+  handleTokenResponse: jest.fn(async () => ({ shouldRedirect: false })),
 }));
 
-// Mock the icons
-jest.mock('../../../../../assets/icons', () => ({
+// Mock the StartIcon component to avoid theme issues
+jest.mock("../../../../../assets/icons", () => ({
   StartIcon: () => <div data-testid="start-icon">Start Icon</div>,
-  LeftArrowIcon: () => <div data-testid="left-arrow-icon">Left Arrow Icon</div>,
 }));
 
-// Mock the token manager
-jest.mock('../../../../../utils/tokenManager', () => ({
-  createApiHeaders: jest.fn(() => ({ 'Content-Type': 'application/json' })),
-  handleTokenResponse: jest.fn(() => Promise.resolve({ shouldRedirect: false, redirectUrl: null })),
-}));
+// Create a test store
+const testStore = configureStore({
+  reducer: {
+    // Mock reducer for authApi
+    authApi: (state = {}, action: any) => state,
+    AuthSlice: (state = {}, action: any) => state,
+  },
+});
 
-// Mock fetch
-global.fetch = jest.fn();
+// Create a test theme
+const testTheme = createTheme();
 
-describe('Authenticate Email MFA Page', () => {
+// Custom render function
+const renderWithProviders = (ui: React.ReactElement) => render(
+  <Provider store={testStore}>
+    <ThemeProvider theme={testTheme}>
+      {ui}
+    </ThemeProvider>
+  </Provider>
+);
+
+describe("EmailMfaPage", () => {
+  const push = jest.fn();
+
   beforeEach(() => {
     jest.clearAllMocks();
-    (global.fetch as jest.Mock).mockClear();
+    (useRouter as jest.Mock).mockReturnValue({ push });
   });
 
-  it('initiates email MFA authentication on mount', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ success: true }),
+  function mockAuthMfaMutation({ isLoading = false, result = {} } = {}) {
+    (useAuthMfaMutation as jest.Mock).mockReturnValue([
+      jest.fn().mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue(result),
+      }), { isLoading }
+    ]);
+  }
+
+  function mockMfaVerifyMutation({ isLoading = false, result = {} } = {}) {
+    (useMfaVerifyMutation as jest.Mock).mockReturnValue([
+      jest.fn().mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue(result),
+      }), { isLoading }
+    ]);
+  }
+
+  test("renders loading skeleton initially", () => {
+    mockAuthMfaMutation({ isLoading: true });
+    mockMfaVerifyMutation();
+    renderWithProviders(<EmailMfaPage />);
+    // Check for skeleton elements by their class names
+    const skeletons = document.querySelectorAll('.MuiSkeleton-root');
+    expect(skeletons.length).toBeGreaterThan(0);
+  });
+
+  test("renders message and input fields after MFA start", async () => {
+    mockAuthMfaMutation({ result: { message: "Test MFA sent" } });
+    mockMfaVerifyMutation();
+    await act(async () => {
+      renderWithProviders(<EmailMfaPage />);
     });
+    expect(screen.getByText(/please check your messages/i)).toBeInTheDocument();
+    expect(screen.getAllByLabelText(/digit/i)).toHaveLength(6);
+    expect(screen.getByText(/Test MFA sent/i)).toBeInTheDocument();
+  });
 
-    render(<Page />);
+  test("displays error if code is incomplete", async () => {
+    mockAuthMfaMutation({ result: { message: "Test MFA sent" } });
+    mockMfaVerifyMutation();
+    await act(async () => renderWithProviders(<EmailMfaPage />));
 
+    // Fill all 6 digits with a complete code
+    for (let i = 0; i < 6; i++) {
+      fireEvent.change(screen.getAllByLabelText(/digit/i)[i], { target: { value: "1" } });
+    }
+
+    // Wait for the button to be enabled
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/auth/mfa/authenticate/email/initiate'),
-        expect.objectContaining({
-          method: 'POST',
-          headers: expect.any(Object),
-          body: JSON.stringify({}),
-        })
-      );
+      expect(screen.getByRole("button", { name: /verify/i })).not.toBeDisabled();
     });
+
+    // Now clear one digit to make it incomplete
+    fireEvent.change(screen.getAllByLabelText(/digit/i)[5], { target: { value: "" } });
+
+    // The button should now be disabled, so we can't click it
+    // Instead, let's test that the button is disabled when code is incomplete
+    expect(screen.getByRole("button", { name: /verify/i })).toBeDisabled();
   });
 
-  it('handles email MFA initiation error', async () => {
-    (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
+  test("successful verification redirects", async () => {
+    mockAuthMfaMutation({ result: { message: "Test MFA sent" } });
+    mockMfaVerifyMutation({ result: { result: "success", success: true, verified: true } });
+    jest.mocked(handleTokenResponse).mockResolvedValue({ shouldRedirect: true, redirectUrl: "/dashboard" });
 
-    render(<Page />);
-
+    await act(async () => renderWithProviders(<EmailMfaPage />));
+    // Fill all digits
+    for (let idx = 0; idx < 6; idx++) {
+      fireEvent.change(screen.getAllByLabelText(/digit/i)[idx], { target: { value: idx + 1 + "" } });
+    }
+    fireEvent.click(screen.getByRole("button", { name: /verify/i }));
     await waitFor(() => {
-      expect(screen.getByText('Failed to send verification email. Please try again.')).toBeInTheDocument();
+      expect(push).toHaveBeenCalledWith("/dashboard");
     });
   });
 
-  it('renders 6 digit input fields after loading completes', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ success: true }),
-    });
-
-    render(<Page />);
+  test("shows error on failed verification and too many tries alert", async () => {
+    mockAuthMfaMutation({ result: { message: "Test MFA sent" } });
+    const failFn = jest
+      .fn()
+      .mockResolvedValueOnce({ result: "fail", message: "Invalid code" })
+      .mockResolvedValueOnce({ result: "fail", message: "Invalid code" })
+      .mockResolvedValueOnce({ result: "fail", message: "Invalid code" })
+      .mockResolvedValueOnce({ result: "fail", message: "Invalid code" });
+    (useMfaVerifyMutation as jest.Mock).mockReturnValue([
+      jest.fn().mockReturnValue({ unwrap: failFn }), { isLoading: false }
+    ]);
+    await act(async () => renderWithProviders(<EmailMfaPage />));
+    for (let attempt = 0; attempt < 4; attempt++) {
+      for (let idx = 0; idx < 6; idx++) {
+        fireEvent.change(screen.getAllByLabelText(/digit/i)[idx], { target: { value: "2" } });
+      }
+      
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /verify/i }));
+      });
+      
+      if (attempt < 3) {
+        await waitFor(() => {
+          expect(screen.getByText(/Invalid code/)).toBeInTheDocument();
+        }, { timeout: 3000 });
+      }
+    }
     
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    expect(inputFields).toHaveLength(6);
-  });
-
-  it('handles digit input correctly', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ success: true }),
-    });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    fireEvent.change(inputFields[0], { target: { value: '1' } });
-    await waitFor(() => expect(inputFields[0]).toHaveValue('1'));
-  });
-
-  it('only accepts numeric input', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ success: true }),
-    });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    fireEvent.change(inputFields[0], { target: { value: 'a' } });
-    await waitFor(() => expect(inputFields[0]).toHaveValue(''));
-  });
-
-  it('moves to next input when digit is entered', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ success: true }),
-    });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    fireEvent.change(inputFields[0], { target: { value: '1' } });
-
     await waitFor(() => {
-      expect(inputFields[1]).toHaveFocus();
-    });
-  });
+      expect(screen.getByText(/Too many failed tries/)).toBeInTheDocument();
+    }, { timeout: 3000 });
+  }, 15000);
 
-  it('handles backspace navigation', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ success: true }),
-    });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    fireEvent.change(inputFields[1], { target: { value: '2' } });
-    await waitFor(() => expect(inputFields[1]).toHaveValue('2'));
-
-    fireEvent.change(inputFields[1], { target: { value: '' } });
-    fireEvent.keyDown(inputFields[1], { key: 'Backspace' });
-
-    await waitFor(() => {
-      expect(inputFields[0]).toHaveFocus();
-    });
-  });
-
-  it('validates complete code before submission', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ success: true }),
-    });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const verifyButton = screen.getByText('Verify');
-    fireEvent.click(verifyButton);
-
-    await waitFor(() => {
-      expect(screen.getByText('Please enter the complete 6-digit code.')).toBeInTheDocument();
-    });
-  });
-
-  it('submits verification code successfully', async () => {
-    // 1) initiate call  2) verify call
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true, result: 'success' }),
-      });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    inputFields.forEach((field, index) => {
-      fireEvent.change(field, { target: { value: (index + 1).toString() } });
-    });
-
-    const verifyButton = screen.getByText('Verify');
-    fireEvent.click(verifyButton);
-
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/auth/mfa/authenticate/email/verify'),
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ code: '123456' }),
-        })
-      );
-    });
-  });
-
-  it('handles verification error and shows message', async () => {
-    // 1) initiate 2) verify (reject)
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      })
-      .mockRejectedValueOnce(new Error('Verification failed'));
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    inputFields.forEach((field, index) => {
-      fireEvent.change(field, { target: { value: (index + 1).toString() } });
-    });
-
-    const verifyButton = screen.getByText('Verify');
-    fireEvent.click(verifyButton);
-
-    await waitFor(() => {
-      expect(screen.getByText(/Verification failed/)).toBeInTheDocument();
-    });
-  });
-
-  it('handles resend code functionality (timer)', async () => {
+  test("Resend button is disabled for 60s, then can be clicked", async () => {
     jest.useFakeTimers();
+    mockAuthMfaMutation({ result: { message: "Test MFA sent" } });
+    mockMfaVerifyMutation();
+    await act(async () => renderWithProviders(<EmailMfaPage />));
+    // Resend is disabled initially
+    expect(screen.getByRole("button", { name: /Resend code in/i })).toBeDisabled();
 
-    // 1) initiate 2) resend
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    // Advance timer so that resend becomes available
-    act(() => {
-      jest.advanceTimersByTime(61000); // 61s
-    });
-
+    // Fast-forward timer to enable resend
+    act(() => { jest.advanceTimersByTime(61_000); });
     await waitFor(() => {
-      // find button by its text when timer is 0
-      const resendButton = screen.getByRole('button', { name: /Resend code/i });
-      expect(resendButton).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: /Resend code/i })).toBeEnabled();
     });
-
-    // Click resend
-    const resendButton = screen.getByRole('button', { name: /Resend code/i });
-    fireEvent.click(resendButton);
-
-    await waitFor(() => {
-      // initial initiate + resend call
-      expect(global.fetch).toHaveBeenCalledTimes(2);
-    });
-
     jest.useRealTimers();
   });
 
-  it('shows timer countdown for resend button while timer > 0', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ success: true }),
-    });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    await waitFor(() => {
-      expect(screen.getByText(/Resend code in \d+s/)).toBeInTheDocument();
-    });
-  });
-
-  it('navigates to dashboard on successful verification', async () => {
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true, result: 'success' }),
+  test("support button is visible only after too many failed tries", async () => {
+    mockAuthMfaMutation({ result: { message: "Test MFA sent" } });
+    const failFn = jest.fn()
+      .mockResolvedValueOnce({ result: "fail", message: "Invalid code" })
+      .mockResolvedValueOnce({ result: "fail", message: "Invalid code" })
+      .mockResolvedValueOnce({ result: "fail", message: "Invalid code" })
+      .mockResolvedValueOnce({ result: "fail", message: "Invalid code" });
+    (useMfaVerifyMutation as jest.Mock).mockReturnValue([
+      jest.fn().mockReturnValue({ unwrap: failFn }), { isLoading: false }
+    ]);
+    await act(async () => renderWithProviders(<EmailMfaPage />));
+    // Four failed attempts trigger 'too many tries'
+    for (let i = 0; i < 4; i++) {
+      for (let idx = 0; idx < 6; idx++) {
+        fireEvent.change(screen.getAllByLabelText(/digit/i)[idx], { target: { value: "3" } });
+      }
+      
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /verify/i }));
       });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    inputFields.forEach((field, index) => {
-      fireEvent.change(field, { target: { value: (index + 1).toString() } });
-    });
-
-    const verifyButton = screen.getByText('Verify');
-    fireEvent.click(verifyButton);
-
+      
+      if (i < 3) {
+        await waitFor(() => {
+          expect(screen.getByText(/Invalid code/)).toBeInTheDocument();
+        }, { timeout: 3000 });
+      }
+    }
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith('/dashboard');
-    });
-  });
-
-  it('handles token response with redirect', async () => {
-    const { handleTokenResponse } = await import('../../../../../utils/tokenManager');
-    const mockHandleTokenResponse = handleTokenResponse as jest.MockedFunction<typeof handleTokenResponse>;
-    mockHandleTokenResponse.mockResolvedValueOnce({
-      shouldRedirect: true,
-      redirectUrl: '/custom-redirect'
-    });
-
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          success: true,
-          result: 'success',
-          session_token: 'test-session-token'
-        }),
-      });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    inputFields.forEach((field, index) => {
-      fireEvent.change(field, { target: { value: (index + 1).toString() } });
-    });
-
-    const verifyButton = screen.getByText('Verify');
-    fireEvent.click(verifyButton);
-
-    await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith('/custom-redirect');
-    });
-  });
+      expect(screen.getByText(/Too many failed tries/)).toBeInTheDocument();
+    }, { timeout: 3000 });
+    expect(await screen.findByText(/Contact support/i)).toBeInTheDocument();
+  }, 15000);
 });

@@ -36,3 +36,6 @@ export interface MagicLinkResponse {
     ok: boolean;
     detail?: string;
 }
+export interface MagicLinkExpiryProps {
+    email?: string | null;
+}

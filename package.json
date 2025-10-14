@@ -79,7 +79,6 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-hook-form": "^7.58.1",
-    "react-password-strength-bar": "^0.4.1",
     "react-qr-code": "^2.0.18",
     "react-redux": "^9.2.0",
     "simplebar-react": "^3.3.0",

@@ -6,6 +6,8 @@ import { storageUtils } from "../../utils/localStorageutils";
 /**
  * A custom hook for managing local storage state.
  * It provides methods to check if an initial request has been made, mark an initial request as made, clear the initial request flag, get the page load count, increment the page load count, and clear the page load count.
+ * @param initialRequestKey - The storage key for initial request flag (defaults to MAGIC_LINK)
+ * @param pageLoadsKey - The storage key for page loads count (defaults to MAGIC_LINK)
  * @returns An object containing the following methods:
  * - hasInitialRequestBeenMade(): A callback to check if an initial request has been made.
  * - markInitialRequestAsMade(): A callback to mark an initial request as made.
@@ -14,29 +16,32 @@ import { storageUtils } from "../../utils/localStorageutils";
  * - incrementPageLoadCount(): A callback to increment the page load count.
  * - clearPageLoadCount(): A callback to clear the page load count.
  */
-export const useLocalStorageState = () => {
+export const useLocalStorageState = (
+    initialRequestKey: string = STORAGE_KEYS.INITIAL_REQUEST,
+    pageLoadsKey: string = STORAGE_KEYS.PAGE_LOADS
+) => {
     const hasInitialRequestBeenMade = useCallback(() =>
-        storageUtils.get(STORAGE_KEYS.INITIAL_REQUEST) === 'true', []);
+        storageUtils.get(initialRequestKey) === 'true', [initialRequestKey]);
 
     const markInitialRequestAsMade = useCallback(() => {
-        storageUtils.save(STORAGE_KEYS.INITIAL_REQUEST, 'true');
-    }, []);
+        storageUtils.save(initialRequestKey, 'true');
+    }, [initialRequestKey]);
 
     const clearInitialRequestFlag = useCallback(() => {
-        storageUtils.remove(STORAGE_KEYS.INITIAL_REQUEST);
-    }, []);
+        storageUtils.remove(initialRequestKey);
+    }, [initialRequestKey]);
 
     const getPageLoadCount = useCallback(() =>
-        storageUtils.getNumber(STORAGE_KEYS.PAGE_LOADS), []);
+        storageUtils.getNumber(pageLoadsKey), [pageLoadsKey]);
 
     const incrementPageLoadCount = useCallback(() => {
         const currentCount = getPageLoadCount();
-        storageUtils.save(STORAGE_KEYS.PAGE_LOADS, (currentCount + 1).toString());
-    }, [getPageLoadCount]);
+        storageUtils.save(pageLoadsKey, (currentCount + 1).toString());
+    }, [getPageLoadCount, pageLoadsKey]);
 
     const clearPageLoadCount = useCallback(() => {
-        storageUtils.remove(STORAGE_KEYS.PAGE_LOADS);
-    }, []);
+        storageUtils.remove(pageLoadsKey);
+    }, [pageLoadsKey]);
 
     return {
         hasInitialRequestBeenMade,

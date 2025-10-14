@@ -1,6 +1,8 @@
 import '@testing-library/jest-dom';
 
 import React from 'react';
+import { Provider } from 'react-redux';
+import { configureStore } from '@reduxjs/toolkit';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 
@@ -10,6 +12,15 @@ import MagicLink from '../MagicLink';
 
 // Create a theme for testing
 const theme = createTheme();
+
+// Create a test store
+const testStore = configureStore({
+  reducer: {
+    // Mock reducer for authApi
+    authApi: (state = {}, action: any) => state,
+    AuthSlice: (state = {}, action: any) => state,
+  },
+});
 
 // Mock the StartIcon component to avoid theme issues
 jest.mock('../../../assets/icons', () => ({
@@ -26,6 +37,12 @@ jest.mock('next/navigation', () => ({
 // Mock fetch
 global.fetch = jest.fn();
 
+// Mock authApi
+const mockMagickLink = jest.fn();
+jest.mock('../../../store/authApi', () => ({
+  useMagickLinkMutation: () => [mockMagickLink, { isLoading: false }],
+}));
+
 const mockRouter = {
   push: jest.fn(),
   replace: jest.fn(),
@@ -35,8 +52,14 @@ const mockSearchParams = {
   get: jest.fn(),
 };
 
-// Custom render function with theme provider
-const renderWithTheme = (ui: React.ReactElement) => render(<ThemeProvider theme={theme}>{ui}</ThemeProvider>);
+// Custom render function with theme provider and Redux store
+const renderWithTheme = (ui: React.ReactElement) => render(
+  <Provider store={testStore}>
+    <ThemeProvider theme={theme}>
+      {ui}
+    </ThemeProvider>
+  </Provider>
+);
 
 describe('MagicLink', () => {
   beforeEach(() => {
@@ -89,14 +112,9 @@ describe('MagicLink', () => {
       });
       renderWithTheme(<MagicLink />);
       await waitFor(() => {
-        expect(fetch).toHaveBeenCalledWith(
-          expect.stringContaining('/auth/magic_link/request'),
-          expect.objectContaining({
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: 'test@example.com' })
-          })
-        );
+        expect(mockMagickLink).toHaveBeenCalledWith({
+          email: 'test@example.com'
+        });
       });
     });
 
@@ -113,14 +131,25 @@ describe('MagicLink', () => {
         if (key === 'email') return 'test@example.com';
         return null;
       });
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ message: 'Success' })
+
+      // Mock the mutation to return a successful response
+      mockMagickLink.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue({ message: 'Success' })
       });
+
       const { rerender } = renderWithTheme(<MagicLink />);
-      rerender(<ThemeProvider theme={theme}><MagicLink /></ThemeProvider>);
+
+      // Wait for the first API call to complete
       await waitFor(() => {
-        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(mockMagickLink).toHaveBeenCalledTimes(1);
+      });
+
+      // Re-render the component
+      rerender(<ThemeProvider theme={theme}><MagicLink /></ThemeProvider>);
+
+      // The API call should still be only 1 time (no additional calls on re-render)
+      await waitFor(() => {
+        expect(mockMagickLink).toHaveBeenCalledTimes(1);
       });
     });
 

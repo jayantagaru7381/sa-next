@@ -1,7 +1,13 @@
 import React from 'react';
+import { Provider } from 'react-redux';
+import { configureStore } from '@reduxjs/toolkit';
 import { render, screen, waitFor } from '@testing-library/react';
 
-import { mockPush } from 'src/test-utils';
+import { createTheme } from '@mui/material';
+import { ThemeProvider } from '@mui/material/styles';
+
+// Mock push function
+const mockPush = jest.fn();
 
 import EntraCallbackPage from '../../callback/EntraCallbackPage';
 import { handleTokenResponse } from '../../../../../../utils/tokenManager';
@@ -10,7 +16,37 @@ import { handleTokenResponse } from '../../../../../../utils/tokenManager';
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
 
+// Mock authApi
+const mockAuthEntraCallback = jest.fn();
+jest.mock('../../../../../../store/authApi', () => ({
+  useAuthEntraCallbackMutation: () => [mockAuthEntraCallback, { isLoading: false }],
+}));
+
+// Set up the mock to return unwrap method
+mockAuthEntraCallback.mockReturnValue({
+  unwrap: jest.fn().mockResolvedValue({})
+});
+
 // Mock handleTokenResponse will be set up in the mock
+
+// Create test store and theme
+const testStore = configureStore({
+  reducer: {
+    authApi: (state = {}, action) => state,
+    AuthSlice: (state = { user: null }, action) => state,
+  },
+});
+
+const testTheme = createTheme();
+
+// Custom render function with providers
+const renderWithProviders = (ui: React.ReactElement) => render(
+    <Provider store={testStore}>
+      <ThemeProvider theme={testTheme}>
+        {ui}
+      </ThemeProvider>
+    </Provider>
+  );
 
 // Mock Next.js navigation
 const mockReplace = jest.fn();
@@ -42,6 +78,11 @@ jest.mock('../../../../../../utils/tokenManager', () => ({
 describe('EntraCallbackPage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAuthEntraCallback.mockClear();
+    // Reset the mock to return unwrap method
+    mockAuthEntraCallback.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({})
+    });
     // Reset the mock implementation
     mockSearchParams.get.mockImplementation((key: string) => {
       if (key === 'code') return 'mockcode';
@@ -67,14 +108,12 @@ describe('EntraCallbackPage', () => {
       return null;
     });
 
-    // Simulate success backend response
-    mockFetch.mockResolvedValue({
-      ok: true,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: async () => JSON.stringify({
+    // Mock the mutation to return a LoginResponse object
+    mockAuthEntraCallback.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({
         result: 'success',
         redirect_url: '/dashboard',
-      }),
+      })
     });
 
     // Mock handleTokenResponse to return shouldRedirect: true
@@ -83,7 +122,7 @@ describe('EntraCallbackPage', () => {
       redirectUrl: '/dashboard'
     });
 
-    render(<EntraCallbackPage />);
+    renderWithProviders(<EntraCallbackPage />);
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith('/dashboard');
     });
@@ -96,13 +135,12 @@ describe('EntraCallbackPage', () => {
       return null;
     });
 
-    mockFetch.mockResolvedValue({
-      ok: true,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: async () => JSON.stringify({
+    // Mock the mutation to return a LoginResponse object
+    mockAuthEntraCallback.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({
         result: 'email_verification_required',
         user_id: 'user-123',
-      }),
+      })
     });
 
     // Mock handleTokenResponse to return shouldRedirect: false so component handles the redirect
@@ -111,7 +149,7 @@ describe('EntraCallbackPage', () => {
       redirectUrl: null
     });
 
-    render(<EntraCallbackPage />);
+    renderWithProviders(<EntraCallbackPage />);
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith('/mfa/authenticate/emailmfa/codecheck');
     });
@@ -124,13 +162,12 @@ describe('EntraCallbackPage', () => {
       return null;
     });
 
-    mockFetch.mockResolvedValue({
-      ok: true,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: async () => JSON.stringify({
+    // Mock the mutation to return a LoginResponse object
+    mockAuthEntraCallback.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({
         result: 'mfa_auth_required',
         details: { enrolled_methods: ['totp'] }
-      }),
+      })
     });
 
     // Mock handleTokenResponse to return shouldRedirect: false so component handles the redirect
@@ -139,7 +176,7 @@ describe('EntraCallbackPage', () => {
       redirectUrl: null
     });
 
-    render(<EntraCallbackPage />);
+    renderWithProviders(<EntraCallbackPage />);
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith('/mfa/authenticate/authenticatormfa/authverifycode');
     });
@@ -152,14 +189,13 @@ describe('EntraCallbackPage', () => {
       return null;
     });
 
-    mockFetch.mockResolvedValue({
-      ok: true,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: async () => JSON.stringify({
+    // Mock the mutation to return a LoginResponse object
+    mockAuthEntraCallback.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({
         result: 'mfa_setup_required',
         user_id: 100,
         temp_token: 'temp-token',
-      }),
+      })
     });
 
     // Mock handleTokenResponse to return shouldRedirect: false so component handles the redirect
@@ -168,14 +204,9 @@ describe('EntraCallbackPage', () => {
       redirectUrl: null
     });
 
-    render(<EntraCallbackPage />);
-    
-    // First check if fetch was called
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalled();
-    });
-    
-    // Then check if redirect was called
+    renderWithProviders(<EntraCallbackPage />);
+
+    // Check if redirect was called
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith('/mfa/register');
     });
@@ -183,7 +214,7 @@ describe('EntraCallbackPage', () => {
 
   it('shows missing authorization code error', async () => {
     mockSearchParams.get.mockImplementation((key: string) => null);
-    render(<EntraCallbackPage />);
+    renderWithProviders(<EntraCallbackPage />);
     await waitFor(() => {
       expect(screen.getByText('Missing authorization code.')).toBeInTheDocument();
     });

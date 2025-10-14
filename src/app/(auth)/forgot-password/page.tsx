@@ -1,8 +1,9 @@
 "use client";
 
-import type { JSX, FormEvent, ChangeEvent } from "react";
+import type { FormEvent, ChangeEvent } from "react";
 
-import { useState } from "react";
+import React, { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { LoadingButton } from "@mui/lab";
 import { Alert, Paper, Stack, Button, TextField, FormControl } from "@mui/material";
@@ -17,14 +18,16 @@ const internalDomains =
 
 const envLabel = process.env.NEXT_PUBLIC_ENV_LABEL; // "DEV", "UAT", or "PROD"
 
-const ForgotPasswordPage: React.FC = (): JSX.Element => {
+function ForgotPasswordPageInner() {
+  const searchParams = useSearchParams();
   const [forgotPassword, { isLoading, isSuccess }] = useForgotPasswordMutation();
   const [fpError, setFpError] = useState<string | null>(null);
-  const [fpEmail, setFpEmail] = useState("");
+  const userEmail = searchParams.get("email") || "";
+  const [fpEmail, setFpEmail] = useState<string | null>(userEmail ?? "");
 
   const fpInputHandler = (event: ChangeEvent<HTMLInputElement>) => {
-    const lowerEmail = event.target.value.toLowerCase();
-    setFpEmail(lowerEmail);
+    const sanitizedLowerEmail = event.target.value?.replace(/\s+/g, "")?.toLowerCase();
+    setFpEmail(sanitizedLowerEmail);
     setFpError(null);
   };
 
@@ -47,8 +50,8 @@ const ForgotPasswordPage: React.FC = (): JSX.Element => {
     try {
       await forgotPassword({ email: fpEmail }).unwrap();
     } catch (error: any) {
-      if (error.response && error.response.data && error.response.data.message) {
-        setFpError(error.response.data.message);
+      if (error?.response && error?.response?.data && error?.response?.data?.message) {
+        setFpError(error?.response?.data?.message);
       } else {
         setFpError("Something went wrong. Please try again.");
       }
@@ -57,9 +60,12 @@ const ForgotPasswordPage: React.FC = (): JSX.Element => {
   return (
     <AuthLayout>
       <AuthSALogoBranding />
-      <section className="text-center mb-5 bg-white py-5  px-3 max-w-[400px] min-h-[300px] shadow-sm select-none " style={{
-        borderRadius: "16px"
-      }}>
+      <section
+        className="text-center mb-5 bg-white py-5  px-3 max-w-[420px] w-[420px] min-h-[300px] shadow-sm select-none "
+        style={{
+          borderRadius: "16px",
+        }}
+      >
         <h1 className="text-xl font-bold text-gray-900 mb-1.5">
           {isSuccess ? "Please check your email!" : "Forgot Your Password?"}
         </h1>
@@ -131,7 +137,13 @@ const ForgotPasswordPage: React.FC = (): JSX.Element => {
             )}
             <Button
               variant="text"
-              startIcon={<LeftArrowIcon width={16} height={16} sx={{ color: isLoading ? "text.disabled" : "inherit" }} />}
+              startIcon={
+                <LeftArrowIcon
+                  width={16}
+                  height={16}
+                  sx={{ color: isLoading ? "text.disabled" : "inherit" }}
+                />
+              }
               fullWidth
               sx={{ textTransform: "none", fontWeight: 500 }}
               href="/"
@@ -144,6 +156,14 @@ const ForgotPasswordPage: React.FC = (): JSX.Element => {
       </section>
     </AuthLayout>
   );
-};
+}
 
-export default ForgotPasswordPage;
+export default function ForgotPasswordPage() {
+  return (
+    <Suspense>
+      <ForgotPasswordPageInner />
+    </Suspense>
+  );
+}
+
+// npm test -- --coverage

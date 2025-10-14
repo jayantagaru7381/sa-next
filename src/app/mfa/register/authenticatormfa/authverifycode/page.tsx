@@ -1,28 +1,26 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
-import React, { useRef, useState, Suspense, type FormEvent, type KeyboardEvent } from "react";
+import { useRouter } from "next/navigation";
+import React, { useRef, type JSX, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import Box from "@mui/material/Box";
-import Stack from "@mui/material/Stack";
 import Alert from "@mui/material/Alert";
+import Stack from "@mui/material/Stack";
 import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
-import { createApiHeaders, handleTokenResponse } from "src/utils/tokenManager";
+import { CODE_LENGTH } from "../../../../../utils/Constants";
+import ProgressBar from "../../../../../components/common/ProgressBar";
+import { handleTokenResponse } from "../../../../../utils/tokenManager";
+import { useMfaVerifyRegisterMutation } from "../../../../../store/authApi";
 
-import ProgressBar from "src/components/common/ProgressBar";
-
-function AuthenticatorMfaPageContent() {
-  const searchParams = useSearchParams();
-  const tempToken = searchParams.get("temp");
-  const CODE_LENGTH = 6;
+const AuthenticatorMfaPageContent: React.FC = (): JSX.Element => {
+  const [mfaVerifyRegister, { isLoading }] = useMfaVerifyRegisterMutation();
   const [code, setCode] = useState<string[]>(Array(CODE_LENGTH).fill(""));
   const [error, setError] = useState<string | null>(null);
   const [showTooManyTries, setShowTooManyTries] = useState<boolean>(false);
   const [failedAttempts, setFailedAttempts] = useState<number>(0);
-  const [isVerifying, setIsVerifying] = useState<boolean>(false);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
   const router = useRouter();
 
@@ -77,32 +75,19 @@ function AuthenticatorMfaPageContent() {
       setError("Please enter the complete 6-digit code.");
       return;
     }
-
-    const API_ENDPOINT = `${process.env.NEXT_PUBLIC_API_BASE}/auth/mfa/register/authenticator_app/verify`;
-
     try {
-      setIsVerifying(true);
       setError(null);
-
-      const headers = createApiHeaders(true, true, tempToken || undefined);
-
-      const response = await fetch(API_ENDPOINT, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
+      const response = await mfaVerifyRegister({
+        payload: JSON.stringify({
           code: verificationCode,
         }),
-      });
+        mode: 'authenticator_app'
+      },
+      ).unwrap();
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
-
-      if (result.result === "success" && (result.session_token || result.temp_token)) {
+      if (response.result === "success" && (response.session_token || response.temp_token)) {
         const { shouldRedirect, redirectUrl } = await handleTokenResponse(
-          result
+          response
         );
         if (shouldRedirect) {
           router.push(redirectUrl!);
@@ -110,14 +95,12 @@ function AuthenticatorMfaPageContent() {
         }
       }
 
-      if (result.success || result.verified) {
-        console.log("Verification successful:", result);
-
+      if (response.success || response.verified) {
         setError(null);
         setFailedAttempts(0);
         setShowTooManyTries(false);
       } else {
-        throw new Error(result.message || "Verification failed");
+        throw new Error(response.message || "Verification failed");
       }
     } catch (verifyError) {
       console.error("Verification failed:", verifyError);
@@ -125,14 +108,15 @@ function AuthenticatorMfaPageContent() {
       const newFailedAttempts = failedAttempts + 1;
       setFailedAttempts(newFailedAttempts);
 
+      // Clear the OTP code after wrong verification
+      setCode(Array(CODE_LENGTH).fill(""));
+
       if (newFailedAttempts >= 4) {
         setShowTooManyTries(true);
         setError(null);
       } else {
         setError("Verification failed. Please check the code provided and try again.");
       }
-    } finally {
-      setIsVerifying(false);
     }
   };
 
@@ -280,7 +264,7 @@ function AuthenticatorMfaPageContent() {
                 inputRef={(el) => (inputsRef.current[idx] = el)}
                 onChange={(e) => handleChange(idx, e.target.value)}
                 onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => handleKeyDown(idx, e)}
-                disabled={isVerifying}
+                disabled={isLoading}
                 InputProps={{
                   sx: {
                     height: 48.7,
@@ -339,7 +323,7 @@ function AuthenticatorMfaPageContent() {
             variant="outlined"
             color="inherit"
             onClick={() => router.push("/mfa/register/authenticatormfa/qrcode")}
-            disabled={isVerifying}
+            disabled={isLoading}
             sx={{
               minWidth: 69,
               minHeight: 48,
@@ -366,10 +350,10 @@ function AuthenticatorMfaPageContent() {
             type="submit"
             variant="contained"
             color="primary"
-            disabled={isVerifying}
+            disabled={isLoading}
             sx={{ fontWeight: "bold", minWidth: 140, height: 48 }}
           >
-            {isVerifying ? "Verifying..." : "Complete (3/3)"}
+            {isLoading ? "Verifying..." : "Complete (3/3)"}
           </Button>
         </Stack>
       </form>
@@ -377,29 +361,4 @@ function AuthenticatorMfaPageContent() {
   );
 }
 
-export default function AuthenticatorMfaPage() {
-  return (
-    <Suspense
-      fallback={
-        <Box
-          sx={{
-            maxWidth: 420,
-            height: "auto",
-            borderRadius: 2,
-            background: "#FFF",
-            bgcolor: "background.paper",
-            boxShadow: 3,
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            minHeight: 200,
-          }}
-        >
-          <Typography>Loading...</Typography>
-        </Box>
-      }
-    >
-      <AuthenticatorMfaPageContent />
-    </Suspense>
-  );
-}
+export default AuthenticatorMfaPageContent

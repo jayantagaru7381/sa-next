@@ -1,13 +1,12 @@
 "use client"
 
-import React from "react";
+import type { MagicLinkExpiryProps } from "../../types/auth";
+
 import { useRouter } from "next/navigation";
 
 import { Button } from "@mui/material";
 
-interface MagicLinkExpiryProps {
-    email?: string | null;
-}
+
 
 export default function MagicLinkExpiry({ email }: MagicLinkExpiryProps) {
     const router = useRouter();
@@ -24,7 +23,7 @@ export default function MagicLinkExpiry({ email }: MagicLinkExpiryProps) {
     };
 
     return (
-        <div className="text-center">            
+        <div className="text-center">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <Button
                     variant="contained"

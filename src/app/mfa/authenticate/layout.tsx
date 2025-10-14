@@ -1,23 +1,14 @@
-import Image from "next/image";
 import { type ReactNode } from "react";
 
 import AuthLayout from "src/components/layout/AuthLayout";
+import AuthSALogoBranding from "src/components/auth/AuthSALogoBranding";
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
     <AuthLayout>
       <div className="w-[420px] py-4">
         <section className="text-center mb-5">
-          <div className="mb-3 flex justify-center">
-            <Image
-              src="/fullprimary.svg"
-              alt="SA One Source"
-              width={170}
-              height={60}
-              className="w-[170px] h-[60px]"
-              priority
-            />
-          </div>
+          <AuthSALogoBranding />
           <h1
             className="mb-1.5"
             style={{

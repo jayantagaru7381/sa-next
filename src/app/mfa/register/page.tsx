@@ -17,7 +17,7 @@ import {
 import { SmsIcon, EmailIcon } from "../../../assets/icons";
 
 export default function Page() {
-  const [method, setMethod] = useState("");
+  const [method, setMethod] = useState<string>("");
   const router = useRouter();
 
   const handleContinue = () => {

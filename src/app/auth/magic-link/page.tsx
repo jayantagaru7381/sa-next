@@ -7,7 +7,8 @@ import MagicLink from "../../../components/auth/MagicLink";
 function page() {
   return (
     <section
-      className="text-center bg-white rounded-md max-w-[420px] shadow-sm"
+      draggable={false}
+      className="text-center bg-white rounded-md max-w-[420px] shadow-sm select-none"
       style={{ padding: "40px 24px" }}
     >
       <h1 className="text-xl font-bold text-gray-900 mb-1.5">Please check your email</h1>

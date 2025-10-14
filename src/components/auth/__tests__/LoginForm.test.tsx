@@ -265,7 +265,7 @@ describe("LoginForm", () => {
 
       const forgotPasswordLink = screen.getByText("Forgot password?");
       await user.click(forgotPasswordLink);
-      expect(mockPush).toHaveBeenCalledWith("/forgot-password");
+      expect(mockPush).toHaveBeenCalledWith("/forgot-password?email=");
     });
   });
 

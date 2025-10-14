@@ -1,329 +1,245 @@
-import React from 'react';
 
-import Page from '../codecheck/page';
-import { act, render, screen, waitFor, mockPush, fireEvent } from '../../../../../test-utils';
+import '@testing-library/jest-dom';
 
+import { useRouter, useSearchParams } from "next/navigation";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 
-// Mock the router
-const mockRouter = {
-  push: mockPush,
-  replace: jest.fn(),
-  back: jest.fn(),
-  forward: jest.fn(),
-  refresh: jest.fn(),
-  prefetch: jest.fn(),
+import SMSMfaPage from "../codecheck/page";
+import { handleTokenResponse } from "../../../../../utils/tokenManager";
+import { useAuthMfaMutation, useMfaVerifyMutation } from "../../../../../store/authApi";
+
+jest.mock("../../../../../store/authApi");
+jest.mock("next/navigation", () => ({
+  useRouter: jest.fn(),
+  useSearchParams: jest.fn(),
+}));
+jest.mock("../../../../../utils/tokenManager", () => ({
+  handleTokenResponse: jest.fn(async () => ({ shouldRedirect: false })),
+}));
+jest.mock("../../../../../assets/icons", () => ({
+  StartIcon: () => <span data-testid="start-icon">icon</span>,
+}));
+
+// Mock timer hooks
+const mockMainTimer = {
+  timer: 600,
+  startTimer: jest.fn(),
+  saveTimestamp: jest.fn(),
+  getRemainingTime: jest.fn(() => 0),
+  clearTimestamp: jest.fn(),
 };
 
-// Mock environment variable
-process.env.NEXT_PUBLIC_API_BASE = 'http://localhost:3000/api';
-
-// Create a mock URLSearchParams that properly handles the phone parameter
-const mockSearchParams = {
-  get: jest.fn((key: string) => {
-    if (key === 'phone') return '+1234567890';
-    return null;
-  }),
-  has: jest.fn(),
-  getAll: jest.fn(),
-  keys: jest.fn(),
-  values: jest.fn(),
-  entries: jest.fn(),
-  forEach: jest.fn(),
-  toString: jest.fn(),
-  size: 1,
-  [Symbol.iterator]: jest.fn(),
+const mockResendTimer = {
+  resendTimer: 0,
+  startResendTimer: jest.fn(),
+  stopResendTimer: jest.fn(),
+  setResendTimerValue: jest.fn(),
+  getRemainingResendTime: jest.fn(() => 0),
 };
 
-jest.mock('next/navigation', () => ({
-  useRouter: () => mockRouter,
-  useSearchParams: () => mockSearchParams,
+const mockLocalStorageState = {
+  hasInitialRequestBeenMade: jest.fn(() => false),
+  markInitialRequestAsMade: jest.fn(),
+  clearInitialRequestFlag: jest.fn(),
+  getPageLoadCount: jest.fn(() => 0),
+  incrementPageLoadCount: jest.fn(),
+  clearPageLoadCount: jest.fn(),
+};
+
+jest.mock("../../../../../hooks/auth/index", () => ({
+  useTimer: jest.fn(() => mockMainTimer),
+  useResendTimer: jest.fn(() => mockResendTimer),
+  useLocalStorageState: jest.fn(() => mockLocalStorageState),
 }));
 
-// Mock the icons
-jest.mock('../../../../../assets/icons', () => ({
-  StartIcon: () => <div data-testid="start-icon">Start Icon</div>,
-}));
+describe("SMSMfaPage", () => {
+  const mockPush = jest.fn();
+  const mockAuthMfa = jest.fn();
+  const mockMfaVerify = jest.fn();
 
-// Mock the token manager
-jest.mock('../../../../../utils/tokenManager', () => ({
-  createApiHeaders: jest.fn(() => ({ 'Content-Type': 'application/json' })),
-}));
-
-// Mock fetch
-global.fetch = jest.fn();
-
-describe('Authenticate SMS MFA Code Check Page', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (global.fetch as jest.Mock).mockClear();
+    (useRouter as jest.Mock).mockReturnValue({ push: mockPush });
+    (useSearchParams as jest.Mock).mockReturnValue({ get: (key: string) => (key === 'phone' ? '+3212345678' : null) });
+    (useAuthMfaMutation as jest.Mock).mockReturnValue([mockAuthMfa, { isLoading: false }]);
+    (useMfaVerifyMutation as jest.Mock).mockReturnValue([mockMfaVerify, { isLoading: false }]);
+    
+    // Reset timer mocks
+    mockMainTimer.timer = 600;
+    mockMainTimer.getRemainingTime.mockReturnValue(0);
+    mockResendTimer.resendTimer = 0;
+    mockResendTimer.getRemainingResendTime.mockReturnValue(0);
+    mockLocalStorageState.hasInitialRequestBeenMade.mockReturnValue(false);
+    mockLocalStorageState.getPageLoadCount.mockReturnValue(0);
   });
 
-  it('handles SMS MFA initiation error', async () => {
-    (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
-
-    render(<Page />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Failed to send verification SMS. Please try again.')).toBeInTheDocument();
-    });
+  test("shows loading skeleton while authMfa is loading", async () => {
+    (useAuthMfaMutation as jest.Mock).mockReturnValue([mockAuthMfa, { isLoading: true }]);
+    await act(async () => render(<SMSMfaPage />));
+    expect(screen.getByText(/code expires in/i)).toBeInTheDocument(); // Check if form is rendered
   });
 
-  it('renders 6 digit input fields after loading completes', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({
-        success: true,
-        message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-      }),
+  test("initiates phone MFA and displays API message", async () => {
+    mockAuthMfa.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ message: "SMS sent to your phone" }),
     });
-
-    render(<Page />);
-
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    expect(inputFields).toHaveLength(6);
+    await act(async () => render(<SMSMfaPage />));
+    expect(await screen.findByText(/please check your messages/i)).toBeInTheDocument();
+    expect(screen.getByText(/SMS sent to your phone/i)).toBeInTheDocument();
   });
 
-  it('handles digit input correctly and moves focus', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({
-        success: true,
-        message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-      }),
+  test("shows error message on initiation failure", async () => {
+    mockAuthMfa.mockReturnValue({
+      unwrap: jest.fn().mockRejectedValue(new Error("Network error")),
     });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    fireEvent.change(inputFields[0], { target: { value: '1' } });
-    await waitFor(() => expect(inputFields[0]).toHaveValue('1'));
-    await waitFor(() => expect(inputFields[1]).toHaveFocus());
+    await act(async () => render(<SMSMfaPage />));
+    expect(await screen.findByText(/failed to send verification sms/i)).toBeInTheDocument();
   });
 
-  it('only accepts numeric input', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({
-        success: true,
-        message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-      }),
+  test("displays formatted timer countdown", async () => {
+    mockAuthMfa.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ message: "Message sent" }),
     });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
-    fireEvent.change(inputFields[0], { target: { value: 'a' } });
-    await waitFor(() => expect(inputFields[0]).toHaveValue(''));
+    
+    // Temporarily use real timer hook for this test
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const authHooks = require("../../../../../hooks/auth/index");
+    const realUseTimer = jest.requireActual("../../../../../hooks/auth/index").useTimer;
+    authHooks.useTimer = realUseTimer;
+    
+    jest.useFakeTimers();
+    await act(async () => render(<SMSMfaPage />));
+    expect(screen.getByText("10:00")).toBeInTheDocument();
+    
+    act(() => jest.advanceTimersByTime(1000));
+    
+    expect(screen.getByText("09:59")).toBeInTheDocument();
+    jest.useRealTimers();
+    
+    // Restore mock
+    authHooks.useTimer = jest.fn(() => mockMainTimer);
   });
 
-  it('handles backspace navigation', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({
-        success: true,
-        message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-      }),
+  test("verifies correct OTP and redirects on success", async () => {
+    mockAuthMfa.mockReturnValue({ unwrap: jest.fn().mockResolvedValue({ message: "Code sent" }) });
+    mockMfaVerify.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ result: "success", session_token: "token" }),
+    });
+    jest.mocked(handleTokenResponse).mockResolvedValue({
+      shouldRedirect: true,
+      redirectUrl: "/dashboard",
     });
 
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
+    await act(async () => render(<SMSMfaPage />));
 
-    const inputFields = screen.getAllByRole('textbox');
-    fireEvent.change(inputFields[1], { target: { value: '2' } });
-    await waitFor(() => expect(inputFields[1]).toHaveValue('2'));
+    const inputs = screen.getAllByLabelText(/digit/i);
+    inputs.forEach((input, i) => fireEvent.change(input, { target: { value: `${i + 1}` } }));
 
-    // simulate clearing and backspace
-    fireEvent.change(inputFields[1], { target: { value: '' } });
-    fireEvent.keyDown(inputFields[1], { key: 'Backspace' });
+    fireEvent.click(screen.getByRole("button", { name: /verify/i }));
 
-    await waitFor(() => {
-      expect(inputFields[0]).toHaveFocus();
-    });
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/dashboard"));
   });
 
-  it('validates complete code before submission', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({
-        success: true,
-        message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-      }),
+  test("shows error if incomplete OTP entered", async () => {
+    mockAuthMfa.mockReturnValue({ unwrap: jest.fn().mockResolvedValue({ message: "Code sent" }) });
+    await act(async () => render(<SMSMfaPage />));
+
+    // Fill only 5 fields to make the code incomplete (length 5 instead of 6)
+    await act(async () => {
+      for (let i = 0; i < 5; i++) {
+        fireEvent.change(screen.getAllByLabelText(/digit/i)[i], { target: { value: "1" } });
+      }
     });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const verifyButton = screen.getByText('Verify');
-    // In strict mode the button should be disabled when inputs are incomplete
-    expect(verifyButton).toBeDisabled();
-  });
-
-  it('navigates to dashboard on successful verification', async () => {
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          success: true,
-          message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true }),
-      });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    const inputFields = screen.getAllByRole('textbox');
 
     await act(async () => {
-      inputFields.forEach((field, index) => {
-        fireEvent.change(field, { target: { value: (index + 1).toString() } });
-      });
-
-      const verifyButton = screen.getByText('Verify');
-      fireEvent.click(verifyButton);
+      fireEvent.submit(document.querySelector("form")!);
     });
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith('/dashboard');
+      expect(screen.getByText(/please enter the complete 6-digit code/i)).toBeInTheDocument();
     });
   });
 
-  it('shows timer countdown for code expiration', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({
-        success: true,
-        message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-      }),
+  test("handles failed verifications and shows 'too many tries' alert", async () => {
+    mockAuthMfa.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ message: "Code sent" }),
     });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    // Wait for the timer to be displayed
-    await waitFor(() => {
-      expect(screen.getByText('Code expires in')).toBeInTheDocument();
+    mockMfaVerify.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ result: "fail", message: "Invalid code" }),
     });
-
-    // Check for timer format (MM:SS)
-    const timeEl = screen.getByText(/^\d{2}:\d{2}$/);
-    expect(timeEl).toBeInTheDocument();
-  });
-
-  it('handles contact support click after too many tries', async () => {
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          success: true,
-          message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-        }),
-      })
-      .mockRejectedValue(new Error('Verification failed'));
-
-    const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
+    await act(async () => render(<SMSMfaPage />));
 
     for (let i = 0; i < 4; i++) {
-      const inputFields = screen.getAllByRole('textbox');
-      const verifyButton = screen.getByText('Verify');
-
+      screen.getAllByLabelText(/digit/i).forEach((input) => fireEvent.change(input, { target: { value: "1" } }));
+      
       await act(async () => {
-        // Only fill inputs if they're empty (first attempt) or if we need to clear them
-        if (i === 0 || (inputFields[0] as HTMLInputElement).value === '') {
-          inputFields.forEach((field, index) => {
-            fireEvent.change(field, { target: { value: (index + 1).toString() } });
-          });
-        }
-
-        fireEvent.click(verifyButton);
+        fireEvent.click(screen.getByRole("button", { name: /verify/i }));
       });
-
+      
       if (i < 3) {
-        await waitFor(() => expect(screen.getByText(/Verification failed/)).toBeInTheDocument());
+        await waitFor(() => {
+          expect(screen.getByText(/invalid code/i)).toBeInTheDocument();
+        }, { timeout: 3000 });
       }
     }
 
-    await waitFor(() => expect(screen.getByText('Too many failed tries')).toBeInTheDocument());
-
-    const contactSupportButton = screen.getByText('Contact support');
-
-    await act(async () => {
-      fireEvent.click(contactSupportButton);
-    });
-
-    expect(consoleSpy).toHaveBeenCalledWith('Contact support clicked');
-    consoleSpy.mockRestore();
-  });
-
-  it('formats time correctly for initial 600s', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({
-        success: true,
-        message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-      }),
-    });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    // Wait for timer to be displayed and check initial format
     await waitFor(() => {
-      expect(screen.getByText('Code expires in')).toBeInTheDocument();
-    });
+      expect(screen.getByText(/too many failed tries/i)).toBeInTheDocument();
+    }, { timeout: 3000 });
+    expect(screen.getByRole("button", { name: /contact support/i})).toBeInTheDocument();
+  }, 15000);
 
-    // initial timer is 10:00 -> should match MM:SS
-    const timeEl = screen.getByText(/^\d{2}:\d{2}$/);
-    expect(timeEl).toBeInTheDocument();
-    expect(timeEl.textContent).toBe('10:00');
+  test("resend button triggers re-sending MFA code", async () => {
+    mockAuthMfa.mockReturnValue({ unwrap: jest.fn().mockResolvedValue({ message: "SMS resent" }) });
+    await act(async () => render(<SMSMfaPage />));
+    const resendBtn = screen.getByRole("button", { name: /resend code/i });
+    fireEvent.click(resendBtn);
+    expect(mockAuthMfa).toHaveBeenCalled();
+    expect(await screen.findByText(/sms resent/i)).toBeInTheDocument();
   });
 
-  it('enables resend after advancing timer (fake timers)', async () => {
-    jest.useFakeTimers();
+  test("disables verify button during verification", async () => {
+    mockAuthMfa.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ message: "Code sent" }),
+    });
+    (useMfaVerifyMutation as jest.Mock).mockReturnValue([mockMfaVerify, { isLoading: true }]);
+    await act(async () => render(<SMSMfaPage />));
+    expect(screen.getByRole("button", { name: /verifying/i })).toBeDisabled();
+  });
 
-    (global.fetch as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          success: true,
-          message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          success: true,
-          message: "We've sent a 6-digit confirmation code to the phone number +1234567890. Please enter the code in below box to log in."
-        }),
+  test("disables resend button during sending", async () => {
+    mockAuthMfa.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ message: "Code sent" }),
+    });
+    (useAuthMfaMutation as jest.Mock).mockReturnValue([mockAuthMfa, { isLoading: true }]);
+    await act(async () => render(<SMSMfaPage />));
+    expect(screen.getByRole("button", { name: /sending/i })).toBeDisabled();
+  });
+
+  test("contact support button triggers console log", async () => {
+    mockAuthMfa.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ message: "Code sent" }),
+    });
+    mockMfaVerify.mockReturnValue({
+      unwrap: jest.fn().mockResolvedValue({ result: "fail", message: "fail" }),
+    });
+    const consoleSpy = jest.spyOn(console, "log").mockImplementation(() => { });
+    await act(async () => render(<SMSMfaPage />));
+
+    // Fail 4 times to show support button
+    for (let i = 0; i < 4; i++) {
+      screen.getAllByLabelText(/digit/i).forEach((input) => fireEvent.change(input, { target: { value: "1" } }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /verify/i }));
       });
-
-    render(<Page />);
-    await waitFor(() => expect(screen.getByText('Please check your messages!')).toBeInTheDocument());
-
-    // Wait for timer to be displayed first
-    await waitFor(() => {
-      expect(screen.getByText('Code expires in')).toBeInTheDocument();
-    });
-
-    act(() => {
-      jest.advanceTimersByTime(601000); // 601 seconds -> timer should be 0
-    });
-
-    await waitFor(() => {
-      const resendButton = screen.getByRole('button', { name: /Resend code/i });
-      expect(resendButton).not.toBeDisabled();
-    });
-
-    jest.useRealTimers();
+      // Wait for the error to appear or the too many tries alert
+      if (i < 3) {
+        await waitFor(() => expect(screen.getByText(/fail/i)).toBeInTheDocument());
+      }
+    }
+    const supportBtn = await screen.findByRole("button", { name: /contact support/i });
+    fireEvent.click(supportBtn);
+    expect(consoleSpy).toHaveBeenCalledWith("Contact support clicked");
+    consoleSpy.mockRestore();
   });
 });

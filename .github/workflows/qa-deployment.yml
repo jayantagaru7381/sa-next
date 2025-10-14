@@ -470,6 +470,9 @@ jobs:
           NEXT_PUBLIC_DEPLOYMENT_REASON: ${{ github.event.inputs.deployment_reason }}
         timeout-minutes: ${{ fromJSON(vars.BUILD_TIMEOUT_MINUTES || '15') }}
 
+      - name: 📋 Copy staticwebapp.config.json to build output
+        run: cp staticwebapp.config.json out/
+
       - name: 🔄 Update bundle metrics post-build
         if: always()
         id: qa-bundle-analysis
@@ -559,9 +562,11 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
           app_location: ${{ env.APP_LOCATION }}
-          app_artifact_location: ${{ env.APP_ARTIFACT_LOCATION }}
-          skip_app_build: true
+          output_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          api_location: ""
           skip_api_build: true
+        env:
+          IS_STATIC_EXPORT: true
         timeout-minutes: ${{ fromJSON(vars.DEPLOY_TIMEOUT_MINUTES || '10') }}
         continue-on-error: true
 

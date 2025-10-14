@@ -6,7 +6,13 @@ import type { UserProfile } from "../../types/dashboard";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-import { Box, Alert, AppBar, Button, Toolbar, Typography, CircularProgress } from "@mui/material";
+import Box from "@mui/material/Box";
+import Alert from "@mui/material/Alert";
+import AppBar from "@mui/material/AppBar";
+import Button from "@mui/material/Button";
+import Toolbar from "@mui/material/Toolbar";
+import Typography from "@mui/material/Typography";
+import CircularProgress from "@mui/material/CircularProgress";
 
 import { useLogoutMutation } from "../../store/authApi";
 

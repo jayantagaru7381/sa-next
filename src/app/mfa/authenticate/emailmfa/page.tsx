@@ -1,29 +1,29 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import React, { useRef, useState, useEffect, type FormEvent, type KeyboardEvent } from "react";
+import React, { useRef, type JSX, useState, useEffect, type FormEvent, type KeyboardEvent } from "react";
 
 import Box from "@mui/material/Box";
-import Stack from "@mui/material/Stack";
 import Alert from "@mui/material/Alert";
+import Stack from "@mui/material/Stack";
 import Button from "@mui/material/Button";
 import Skeleton from "@mui/material/Skeleton";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import { StartIcon } from "../../../../assets/icons";
-import { createApiHeaders, handleTokenResponse } from "../../../../utils/tokenManager";
+import { CODE_LENGTH } from "../../../../utils/Constants";
+import { handleTokenResponse } from "../../../../utils/tokenManager";
+import { useAuthMfaMutation, useMfaVerifyMutation } from "../../../../store/authApi";
 
-export default function EmailMfaPage() {
-  const CODE_LENGTH = 6;
+const EmailMfaPage: React.FC = (): JSX.Element => {
+  const [authMfa, { isLoading: isAuthMfaLoading }] = useAuthMfaMutation();
+  const [mfaVerify, { isLoading: isMfaVerifyLoading }] = useMfaVerifyMutation();
   const [code, setCode] = useState<string[]>(Array(CODE_LENGTH).fill(""));
   const [error, setError] = useState<string | null>(null);
   const [timer, setTimer] = useState<number>(60);
   const [failedAttempts, setFailedAttempts] = useState<number>(0);
   const [showTooManyTries, setShowTooManyTries] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isVerifying, setIsVerifying] = useState<boolean>(false);
-  const [isResending, setIsResending] = useState<boolean>(false);
   const [apiMessage, setApiMessage] = useState<string | null>(null);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
   const hasRequestedOnLoadRef = useRef(false);
@@ -38,35 +38,23 @@ export default function EmailMfaPage() {
     const initiateEmailMfa = async () => {
       try {
         hasRequestedOnLoadRef.current = true; // Set immediately to prevent race conditions
-        setIsLoading(true);
-        const headers = createApiHeaders(true, true);
+        const response = await authMfa({
+          payload: JSON.stringify({}),
+          mode: 'email'
+        }).unwrap();
 
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_BASE}/auth/mfa/authenticate/email/initiate`,
-          {
-            method: "POST",
-            headers,
-            body: JSON.stringify({}),
-          }
-        );
-
-        if (!response.ok) {
+        if (!response) {
           throw new Error(`Failed to initiate email MFA: ${response.status}`);
         }
 
-        const data = await response.json();
-        console.log("Email MFA initiated:", data);
-
-        if (data.message) {
-          setApiMessage(data.message);
+        if (response.message) {
+          setApiMessage(response.message);
         }
 
         setTimer(60);
       } catch (initError) {
         console.error("Error initiating email MFA:", initError);
         setError("Failed to send verification email. Please try again.");
-      } finally {
-        setIsLoading(false);
       }
     };
 
@@ -133,54 +121,38 @@ export default function EmailMfaPage() {
     }
 
     try {
-      setIsVerifying(true);
       setError(null);
-
-      const headers = createApiHeaders(true, true);
-
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE}/auth/mfa/authenticate/email/verify`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            code: otpCode,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
-
+      const response = await mfaVerify({
+        payload: JSON.stringify({ code: otpCode }),
+        mode: 'email'
+      },
+      ).unwrap();
       // Handle token response if verification is successful
-      if (result.result === "success" && (result.session_token || result.temp_token)) {
+      if (response.result === "success" && (response.session_token || response.temp_token)) {
         const { shouldRedirect, redirectUrl } = await handleTokenResponse(
-          result
+          response
         );
         if (shouldRedirect) {
           router.push(redirectUrl!);
           return;
         }
       }
-      if (result.success || result.verified || result.result === "success") {
-        console.log("Email MFA registration verification successful:", result);
-
+      if (response?.success || response?.verified || response.result === "success") {
         setError(null);
         setFailedAttempts(0);
         setShowTooManyTries(false);
-
         router.push("/dashboard");
       } else {
-        throw new Error(result.message || result.detail || "Verification failed");
+        throw new Error(response.message || response.detail || "Verification failed");
       }
     } catch (verifyError) {
       console.error("Email MFA verification error:", verifyError);
 
       const newFailedAttempts = failedAttempts + 1;
       setFailedAttempts(newFailedAttempts);
+
+      // Clear the OTP code after wrong verification
+      setCode(Array(CODE_LENGTH).fill(""));
 
       if (newFailedAttempts >= 4) {
         setShowTooManyTries(true);
@@ -192,44 +164,23 @@ export default function EmailMfaPage() {
             : "Verification failed. Please check the code provided and try again."
         );
       }
-    } finally {
-      setIsVerifying(false);
     }
   };
 
   const handleResend = async () => {
     try {
-      setIsResending(true);
       setError(null);
-
-      const headers = createApiHeaders(true, true);
-
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE}/auth/mfa/authenticate/email/initiate`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({}),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`Failed to resend email: ${response.status}`);
+      const response = await authMfa({
+        payload: JSON.stringify({}),
+        mode: 'email'
+      }).unwrap();
+      if (response.message) {
+        setApiMessage(response.message);
       }
-
-      const data = await response.json();
-      console.log("Email MFA resent:", data);
-
-      if (data.message) {
-        setApiMessage(data.message);
-      }
-
       setTimer(60);
     } catch (resendError) {
       console.error("Error resending email MFA:", resendError);
       setError("Failed to resend verification email. Please try again.");
-    } finally {
-      setIsResending(false);
     }
   };
 
@@ -253,7 +204,7 @@ export default function EmailMfaPage() {
         boxShadow: 3,
       }}
     >
-      {isLoading ? (
+      {isAuthMfaLoading ? (
         <Box sx={{ mb: 3 }}>
           <Skeleton variant="text" width="85%" height={20} sx={{ mx: "auto", mb: 1 }} />
           <Skeleton variant="text" width="70%" height={20} sx={{ mx: "auto" }} />
@@ -378,7 +329,7 @@ export default function EmailMfaPage() {
                 inputRef={(el) => (inputsRef.current[idx] = el)}
                 onChange={(e) => handleChange(idx, e.target.value)}
                 onKeyDown={(e) => handleKeyDown(idx, e)}
-                disabled={isVerifying || isResending}
+                disabled={isMfaVerifyLoading || isAuthMfaLoading}
                 InputProps={{
                   sx: {
                     height: 48.664,
@@ -429,10 +380,10 @@ export default function EmailMfaPage() {
             variant="contained"
             color="primary"
             fullWidth
-            disabled={isVerifying || isResending}
+            disabled={isMfaVerifyLoading || isAuthMfaLoading || code?.includes("")}
             sx={{ fontWeight: "bold", height: 48, textTransform: "none" }}
           >
-            {isVerifying ? "Verifying..." : "Verify"}
+            {isMfaVerifyLoading ? "Verifying..." : "Verify"}
           </Button>
 
           <Button
@@ -441,7 +392,7 @@ export default function EmailMfaPage() {
             fullWidth
             onClick={handleResend}
             startIcon={<StartIcon />}
-            disabled={timer > 0 || isVerifying || isResending}
+            disabled={timer > 0 || isMfaVerifyLoading || isAuthMfaLoading}
             sx={{
               minHeight: 48,
               height: 48,
@@ -468,7 +419,7 @@ export default function EmailMfaPage() {
                 }),
             }}
           >
-            {isResending ? "Sending..." : timer > 0 ? `Resend code in ${timer}s` : "Resend code"}
+            {isAuthMfaLoading ? "Sending..." : timer > 0 ? `Resend code in ${timer}s` : "Resend code"}
           </Button>
         </Stack>
       </form>
@@ -510,3 +461,4 @@ export default function EmailMfaPage() {
     </Box>
   );
 }
+export default EmailMfaPage

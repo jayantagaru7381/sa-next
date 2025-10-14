@@ -1,11 +1,22 @@
 import '@testing-library/jest-dom';
 
 import React from 'react';
+import { Provider } from 'react-redux';
+import { configureStore } from '@reduxjs/toolkit';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { render, screen, waitFor } from '@testing-library/react';
 
+import { createTheme, ThemeProvider } from '@mui/material/styles';
+
 import MagicLinkVerifyPage from '../page';
 import { handleTokenResponse } from '../../../../../utils/tokenManager';
+
+// Mock authApi before any imports
+const mockMagicLinkExchange = jest.fn();
+let mockIsLoading = false;
+jest.mock('../../../../../store/authApi', () => ({
+  useMagicLinkExchangeMutation: () => [mockMagicLinkExchange, { isLoading: mockIsLoading }],
+}));
 
 // Mock Next.js navigation
 jest.mock('next/navigation', () => ({
@@ -33,6 +44,27 @@ jest.mock('../../../../../utils/tokenManager', () => ({
 // Mock fetch
 global.fetch = jest.fn();
 
+// Create a test store
+const testStore = configureStore({
+  reducer: {
+    // Mock reducer for authApi
+    authApi: (state = {}, action: any) => state,
+    AuthSlice: (state = {}, action: any) => state,
+  },
+});
+
+// Create a test theme
+const testTheme = createTheme();
+
+// Custom render function
+const renderWithProviders = (ui: React.ReactElement) => render(
+    <Provider store={testStore}>
+      <ThemeProvider theme={testTheme}>
+        {ui}
+      </ThemeProvider>
+    </Provider>
+  );
+
 const mockRouter = {
   push: jest.fn(),
   replace: jest.fn(),
@@ -49,6 +81,9 @@ describe('MagicLinkVerifyPage', () => {
     (useSearchParams as jest.Mock).mockReturnValue(mockSearchParams);
     (fetch as jest.Mock).mockClear();
     (handleTokenResponse as jest.Mock).mockClear();
+    mockMagicLinkExchange.mockClear();
+    mockIsLoading = false; // Reset loading state
+    mockMagicLinkExchange.mockReturnValue({ unwrap: jest.fn().mockResolvedValue({}) });
   });
 
   describe('Loading State', () => {
@@ -60,9 +95,9 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockImplementation(() => new Promise(() => {})); // Never resolves
+      mockIsLoading = true;
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       expect(screen.getByText('Verifying Magic Link')).toBeInTheDocument();
       expect(screen.getByText('Please wait while we verify your magic link...')).toBeInTheDocument();
@@ -76,9 +111,9 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockImplementation(() => new Promise(() => {}));
+      mockIsLoading = true;
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       expect(screen.getByText('Verifying your magic link...')).toBeInTheDocument();
       expect(screen.getByRole('progressbar')).toBeInTheDocument();
@@ -93,11 +128,11 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
-        expect(screen.getByTestId('magic-link-expiry')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       }, { timeout: 3000 });
     });
 
@@ -108,11 +143,11 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
-        expect(screen.getByTestId('magic-link-expiry')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       }, { timeout: 3000 });
     });
 
@@ -122,11 +157,11 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
-        expect(screen.getByTestId('magic-link-expiry')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       });
     });
   });
@@ -140,9 +175,8 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify({ result: 'success' }))
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue({ result: 'success' })
       });
 
       (handleTokenResponse as jest.Mock).mockResolvedValueOnce({
@@ -150,20 +184,13 @@ describe('MagicLinkVerifyPage', () => {
         redirectUrl: '/dashboard'
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
-        expect(fetch).toHaveBeenCalledWith(
-          expect.stringContaining('/auth/magic_link/exchange'),
-          expect.objectContaining({
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              token: 'test-token',
-              jti: 'test-jti'
-            })
-          })
-        );
+        expect(mockMagicLinkExchange).toHaveBeenCalledWith({
+          token: 'test-token',
+          jti: 'test-jti'
+        });
       });
     });
 
@@ -175,16 +202,15 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false,
-        status: 400
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockRejectedValue(new Error('API Error'))
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
-        expect(screen.getByTestId('magic-link-expiry')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       });
     });
 
@@ -195,16 +221,15 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve('')
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue(null)
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
-        expect(screen.getByTestId('magic-link-expiry')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       });
     });
   });
@@ -217,9 +242,8 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify({ result: 'success' }))
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue({ result: 'success' })
       });
 
       (handleTokenResponse as jest.Mock).mockResolvedValueOnce({
@@ -227,7 +251,7 @@ describe('MagicLinkVerifyPage', () => {
         redirectUrl: '/dashboard'
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(mockRouter.push).toHaveBeenCalledWith('/dashboard');
@@ -241,9 +265,8 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify({ result: 'mfa_setup_required' }))
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue({ result: 'mfa_setup_required' })
       });
 
       ((handleTokenResponse as jest.Mock) as jest.Mock).mockResolvedValueOnce({
@@ -251,7 +274,7 @@ describe('MagicLinkVerifyPage', () => {
         redirectUrl: null
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(mockRouter.push).toHaveBeenCalledWith('/mfa/register');
@@ -265,12 +288,11 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify({ 
-          result: 'mfa_auth_required', 
-          details: { enrolled_methods: ['totp'] } 
-        }))
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue({
+          result: 'mfa_auth_required',
+          details: { enrolled_methods: ['totp'] }
+        })
       });
 
       ((handleTokenResponse as jest.Mock) as jest.Mock).mockResolvedValueOnce({
@@ -278,7 +300,7 @@ describe('MagicLinkVerifyPage', () => {
         redirectUrl: null
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(mockRouter.push).toHaveBeenCalledWith('/mfa/authenticate/authenticatormfa/authverifycode');
@@ -292,12 +314,11 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify({ 
-          result: 'mfa_auth_required', 
-          details: { enrolled_methods: ['phone_otp'] } 
-        }))
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue({
+          result: 'mfa_auth_required',
+          details: { enrolled_methods: ['phone_otp'] }
+        })
       });
 
       ((handleTokenResponse as jest.Mock) as jest.Mock).mockResolvedValueOnce({
@@ -305,7 +326,7 @@ describe('MagicLinkVerifyPage', () => {
         redirectUrl: null
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(mockRouter.push).toHaveBeenCalledWith('/mfa/authenticate/smsmfa/codecheck');
@@ -319,12 +340,11 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify({ 
-          result: 'mfa_auth_required', 
-          details: { enrolled_methods: ['email_otp'] } 
-        }))
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue({
+          result: 'mfa_auth_required',
+          details: { enrolled_methods: ['email_otp'] }
+        })
       });
 
       ((handleTokenResponse as jest.Mock) as jest.Mock).mockResolvedValueOnce({
@@ -332,7 +352,7 @@ describe('MagicLinkVerifyPage', () => {
         redirectUrl: null
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(mockRouter.push).toHaveBeenCalledWith('/mfa/authenticate/emailmfa');
@@ -346,9 +366,8 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify({ result: 'email_verification_required' }))
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockResolvedValue({ result: 'email_verification_required' })
       });
 
       ((handleTokenResponse as jest.Mock) as jest.Mock).mockResolvedValueOnce({
@@ -356,7 +375,7 @@ describe('MagicLinkVerifyPage', () => {
         redirectUrl: null
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(mockRouter.push).toHaveBeenCalledWith('/mfa/authenticate/emailmfa/codecheck');
@@ -372,13 +391,15 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockRejectedValue(new Error('Network error'))
+      });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
-        expect(screen.getByTestId('magic-link-expiry')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       });
     });
 
@@ -389,22 +410,21 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve('invalid json')
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockRejectedValue(new Error('Invalid JSON'))
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
-        expect(screen.getByTestId('magic-link-expiry')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       });
     });
   });
 
   describe('Email Handling', () => {
-    it('passes email to MagicLinkExpiry component', async () => {
+    it('shows expiry state when API error occurs', async () => {
       mockSearchParams.get.mockImplementation((key: string) => {
         if (key === 'token') return 'test-token';
         if (key === 'jti') return 'test-jti';
@@ -412,22 +432,21 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockRejectedValue(new Error('API Error'))
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
-        const expiryComponent = screen.getByTestId('magic-link-expiry');
-        expect(expiryComponent).toHaveAttribute('data-email', 'test@example.com');
+        expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       });
     });
 
-    it('handles encoded email correctly', async () => {
+    it('handles request new link with email parameter', async () => {
       const encodedEmail = 'test%2Buser%40example.com';
-      const decodedEmail = 'test+user@example.com';
-      
+
       mockSearchParams.get.mockImplementation((key: string) => {
         if (key === 'token') return 'test-token';
         if (key === 'jti') return 'test-jti';
@@ -435,15 +454,15 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockRejectedValue(new Error('API Error'))
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
-        const expiryComponent = screen.getByTestId('magic-link-expiry');
-        expect(expiryComponent).toHaveAttribute('data-email', decodedEmail);
+        expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Request a new one-time link' })).toBeInTheDocument();
       });
     });
   });
@@ -456,11 +475,11 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockRejectedValue(new Error('API Error'))
       });
 
-      render(<MagicLinkVerifyPage />);
+      renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Link Expired or Invalid')).toBeInTheDocument();
@@ -476,16 +495,16 @@ describe('MagicLinkVerifyPage', () => {
         return null;
       });
 
-      (fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false
+      mockMagicLinkExchange.mockReturnValue({
+        unwrap: jest.fn().mockRejectedValue(new Error('API Error'))
       });
 
-      const { container } = render(<MagicLinkVerifyPage />);
+      const { container } = renderWithProviders(<MagicLinkVerifyPage />);
 
       await waitFor(() => {
-        const section = container.querySelector('section');
-        expect(section).toHaveClass('text-center', 'bg-white', 'rounded-md', 'max-w-[420px]', 'shadow-sm');
-        expect(section).toHaveStyle('padding: 40px 24px');
+        const paper = container.querySelector('.MuiPaper-root');
+        expect(paper).toBeInTheDocument();
+        expect(paper).toHaveClass('verifyContainer');
       });
     });
   });

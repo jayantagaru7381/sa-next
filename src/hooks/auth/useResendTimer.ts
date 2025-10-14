@@ -20,29 +20,30 @@ import { STORAGE_KEYS, TIMER_CONFIG } from "../../utils/Constants";
  * The hook also provides an effect that will clear the stored
  * timestamp and the interval when the resend timer reaches 0.
  *
+ * @param storageKey - The storage key for resend timer timestamp (defaults to MAGIC_LINK)
  * @returns {Object} An object containing the resendTimer state
  * variable and the startResendTimer, stopResendTimer and
  * setResendTimerValue functions. The object also contains the
  * getRemainingResendTime function that returns the remaining time
  * in seconds until the resend button is available.
  */
-export const useResendTimer = () => {
+export const useResendTimer = (storageKey: string = STORAGE_KEYS.RESEND_TIMER) => {
     const [resendTimer, setResendTimer] = useState<number>(0);
     const intervalRef = useRef<number | null>(null);
 
     const saveResendTimestamp = useCallback(() => {
-        storageUtils.save(STORAGE_KEYS.RESEND_TIMER, Date.now().toString());
-    }, []);
+        storageUtils.save(storageKey, Date.now().toString());
+    }, [storageKey]);
 
     const getRemainingResendTime = useCallback(() => {
-        const storedTimestamp = storageUtils.get(STORAGE_KEYS.RESEND_TIMER);
+        const storedTimestamp = storageUtils.get(storageKey);
         if (!storedTimestamp) return 0;
         return calculateRemainingTime(storedTimestamp, TIMER_CONFIG.RESEND_COOLDOWN_TIME);
-    }, []);
+    }, [storageKey]);
 
     const clearResendTimestamp = useCallback(() => {
-        storageUtils.remove(STORAGE_KEYS.RESEND_TIMER);
-    }, []);
+        storageUtils.remove(storageKey);
+    }, [storageKey]);
 
     const startResendTimer = useCallback(() => {
         setResendTimer(TIMER_CONFIG.RESEND_COOLDOWN_TIME);
