@@ -33,6 +33,15 @@ jest.mock('../../../../../../utils/tokenManager', () => ({
   createApiHeaders: jest.fn(() => ({ 'Content-Type': 'application/json' })),
 }));
 
+// Mock the useTempTokenRoute hook
+jest.mock('../../../../../../hooks/auth/index', () => {
+  const actual = jest.requireActual('../../../../../../hooks/auth/index');
+  return {
+    ...actual,
+    useTempTokenRoute: jest.fn(() => true), // Return true to allow the component to render
+  };
+});
+
 // Mock the ProgressBar component
 jest.mock('../../../../../../components/common/ProgressBar', () => ({ currentStep, totalSteps }: { currentStep: number; totalSteps: number }) => (
   <div data-testid="progress-bar">Step {currentStep} of {totalSteps}</div>
@@ -64,12 +73,12 @@ const testTheme = createTheme({
 
 // Custom render function
 const renderWithProviders = (ui: React.ReactElement) => render(
-    <Provider store={testStore}>
-      <ThemeProvider theme={testTheme}>
-        {ui}
-      </ThemeProvider>
-    </Provider>
-  );
+  <Provider store={testStore}>
+    <ThemeProvider theme={testTheme}>
+      {ui}
+    </ThemeProvider>
+  </Provider>
+);
 
 describe('Authenticator QR Code Page', () => {
   beforeEach(() => {

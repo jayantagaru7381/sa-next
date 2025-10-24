@@ -1,7 +1,9 @@
 "use client";
 
+import type { JSX, FormEvent, KeyboardEvent } from "react";
+
 import { useRouter } from "next/navigation";
-import React, { useRef, type JSX, useState, useEffect, type FormEvent, type KeyboardEvent } from "react";
+import React, { useRef, useState, useEffect } from "react";
 
 import Box from "@mui/material/Box";
 import Alert from "@mui/material/Alert";
@@ -12,11 +14,13 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import { StartIcon } from "../../../../assets/icons";
+import { useTempTokenRoute } from "../../../../hooks";
 import { CODE_LENGTH } from "../../../../utils/Constants";
-import { handleTokenResponse } from "../../../../utils/tokenManager";
 import { useAuthMfaMutation, useMfaVerifyMutation } from "../../../../store/authApi";
 
 const EmailMfaPage: React.FC = (): JSX.Element => {
+  // Protect route - requires needs_mfa_auth state
+  const isAuthorized = useTempTokenRoute("needs_mfa_auth");
   const [authMfa, { isLoading: isAuthMfaLoading }] = useAuthMfaMutation();
   const [mfaVerify, { isLoading: isMfaVerifyLoading }] = useMfaVerifyMutation();
   const [code, setCode] = useState<string[]>(Array(CODE_LENGTH).fill(""));
@@ -30,6 +34,11 @@ const EmailMfaPage: React.FC = (): JSX.Element => {
   const router = useRouter();
 
   useEffect(() => {
+    // Only initiate MFA if authorized (has correct auth_state cookie)
+    if (!isAuthorized) {
+      return;
+    }
+
     // Prevent multiple calls using useRef
     if (hasRequestedOnLoadRef.current) {
       return;
@@ -59,7 +68,7 @@ const EmailMfaPage: React.FC = (): JSX.Element => {
     };
 
     initiateEmailMfa();
-  }, []);
+  }, [isAuthorized, authMfa]);
 
   useEffect(() => {
     if (timer > 0) {
@@ -127,17 +136,9 @@ const EmailMfaPage: React.FC = (): JSX.Element => {
         mode: 'email'
       },
       ).unwrap();
-      // Handle token response if verification is successful
-      if (response.result === "success" && (response.session_token || response.temp_token)) {
-        const { shouldRedirect, redirectUrl } = await handleTokenResponse(
-          response
-        );
-        if (shouldRedirect) {
-          router.push(redirectUrl!);
-          return;
-        }
-      }
-      if (response?.success || response?.verified || response.result === "success") {
+
+      // Verification successful - redirect to dashboard
+      if (response.success || response.verified || response.result === "success") {
         setError(null);
         setFailedAttempts(0);
         setShowTooManyTries(false);

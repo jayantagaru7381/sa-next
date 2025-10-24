@@ -1,9 +1,7 @@
 "use client";
 
 import type { JSX } from "react";
-import type { UserProfile } from "../../types/dashboard";
 
-import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 import Box from "@mui/material/Box";
@@ -14,49 +12,30 @@ import Toolbar from "@mui/material/Toolbar";
 import Typography from "@mui/material/Typography";
 import CircularProgress from "@mui/material/CircularProgress";
 
-import { useLogoutMutation } from "../../store/authApi";
-import LottieAnimation from "../../components/common/lottie-animation/LottieAnimation";
-import animationData from "../../../public/lotties/Loadingcircles.json";
+import { useProtectedRoute } from "../../hooks";
+import { useLogoutMutation, useGetProfileQuery } from "../../store/authApi";
+
 const DashboardPage: React.FC = (): JSX.Element => {
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Protect route from unauthenticated access (client-side)
+  // Server-side protection handled by middleware
+  useProtectedRoute();
+
+  const { data: profileData, isLoading, error: profileError } = useGetProfileQuery({});
   const [_logout, { isLoading: logoutIsLoading, error: _logoutError }] = useLogoutMutation();
   const router = useRouter();
-  // const localStorageState = useLocalStorageState();
-
-  useEffect(() => {
-    const stored = localStorage.getItem("userProfile");
-    if (stored) {
-      setProfile(JSON.parse(stored));
-      setLoading(false);
-    } else {
-      setError("User profile not found. Please log in again.");
-      setLoading(false);
-    }
-  }, []);
 
   const handleLogout = async () => {
     try {
-      // createApiHeaders(true, true);
-      // const result = await logout({}).unwrap();
-      // // If logout mutation returns an error, do not redirect
-      // if (logoutError || (result && result.error)) {
-      //   // setError('Logout failed. Please try again.');
-      //   console.error("Logout error:", logoutError || result.error);
-      //   return;
-      // }
-      // clearAllTokens();
-      // localStorageState.clearInitialRequestFlag();
-      // localStorageState.clearPageLoadCount();
-      router.push("/");
+      // Call backend to clear httpOnly cookies (sess, temp_sess, csrf)
+      await _logout({}).unwrap();
     } catch (err) {
-      // setError('Logout failed. Please try again.');
       console.error("Logout error:", err);
     }
+    // Redirect to login
+    router.push("/login");
   };
 
-  if (loading) {
+  if (isLoading) {
     return (
       <Box sx={{ p: 6, display: "grid", placeItems: "center", gap: 2 }}>
         <CircularProgress />
@@ -65,13 +44,20 @@ const DashboardPage: React.FC = (): JSX.Element => {
     );
   }
 
-  if (error) {
+  if (profileError) {
     return (
       <Box sx={{ p: 6, display: "grid", placeItems: "center", gap: 2 }}>
-        <Alert severity="error">{error}</Alert>
+        <Alert severity="error">
+          {(profileError as any)?.data?.detail || "Failed to load profile. Please log in again."}
+        </Alert>
+        <Button variant="contained" onClick={() => router.push("/login")}>
+          Return to Login
+        </Button>
       </Box>
     );
   }
+
+  const profile = profileData?.user;
 
   return (
     <Box>
@@ -80,12 +66,11 @@ const DashboardPage: React.FC = (): JSX.Element => {
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
             Dashboard
           </Typography>
-          {error && (
+          {_logoutError && (
             <Alert severity="error" sx={{ mr: 2 }}>
               Logout failed. Please try again.
             </Alert>
           )}
-
           <Button
             color="inherit"
             onClick={handleLogout}
@@ -99,7 +84,7 @@ const DashboardPage: React.FC = (): JSX.Element => {
           </Button>
         </Toolbar>
       </AppBar>
-      <LottieAnimation animationData={animationData} />
+
       <Box sx={{ p: 6 }}>
         <Typography variant="h4" gutterBottom>
           Welcome, {profile?.first_name} {profile?.last_name}!

@@ -11,7 +11,11 @@ import Typography from "@mui/material/Typography";
 
 import { LeftArrowIcon } from "src/assets/icons";
 
+import { useTempTokenRoute } from "../../../../hooks";
+
 export default function SMSPhoneEntry() {
+  // Protect route - requires needs_mfa_setup state
+  useTempTokenRoute("needs_mfa_setup");
   const [phone, setPhone] = useState("");
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();

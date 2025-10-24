@@ -24,12 +24,13 @@ import Typography from "@mui/material/Typography";
 
 import { StartIcon } from "../../../../../assets/icons";
 import { formatTime } from "../../../../../utils/helper";
-import { handleTokenResponse } from "../../../../../utils/tokenManager";
 import { useAuthMfaMutation, useMfaVerifyMutation } from "../../../../../store/authApi";
 import { CODE_LENGTH, STORAGE_KEYS, TIMER_CONFIG } from "../../../../../utils/Constants";
-import { useTimer, useResendTimer, useLocalStorageState } from "../../../../../hooks/auth/index";
+import { useTimer, useResendTimer, useLocalStorageState, useTempTokenRoute } from "../../../../../hooks/auth/index";
 
 const SMSMfaPageContent: React.FC = (): JSX.Element => {
+  // Protect route - requires needs_mfa_auth state
+  const isAuthorized = useTempTokenRoute("needs_mfa_auth");
   const [authMfa, { isLoading: isAuthMfaLoading }] = useAuthMfaMutation();
   const [mfaVerify, { isLoading: isMfaVerifyLoading }] = useMfaVerifyMutation();
   const searchParams = useSearchParams();
@@ -179,19 +180,8 @@ const SMSMfaPageContent: React.FC = (): JSX.Element => {
       },
       ).unwrap();
 
-      // Handle token response if verification is successful
-      if (response.result === "success" && (response.session_token || response.temp_token)) {
-        const { shouldRedirect, redirectUrl } = await handleTokenResponse(
-          response
-        );
-        if (shouldRedirect) {
-          router.push(redirectUrl!);
-          return;
-        }
-      }
-      // Check if verification was successful (for cases without tokens)
+      // Verification successful - redirect to dashboard
       if (response.success || response.verified || response.result === "success") {
-        // Clear any existing errors
         setError(null);
         setFailedAttempts(0);
         setShowTooManyTries(false);

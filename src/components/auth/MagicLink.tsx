@@ -192,7 +192,7 @@ const MagicLink: React.FC = (): JSX.Element => {
 
       <Box textAlign="center">
         <Button
-          onClick={() => router.push("/")}
+          onClick={() => router.push("/login")}
           disabled={isMagicklinkLoading}
           sx={{
             textDecoration: "none",

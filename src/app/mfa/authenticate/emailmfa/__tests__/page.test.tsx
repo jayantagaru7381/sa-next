@@ -27,6 +27,15 @@ jest.mock("../../../../../assets/icons", () => ({
   StartIcon: () => <div data-testid="start-icon">Start Icon</div>,
 }));
 
+// Mock the useTempTokenRoute hook
+jest.mock("../../../../../hooks/auth/index", () => {
+  const actual = jest.requireActual("../../../../../hooks/auth/index");
+  return {
+    ...actual,
+    useTempTokenRoute: jest.fn(() => true), // Return true to allow the component to render
+  };
+});
+
 // Create a test store
 const testStore = configureStore({
   reducer: {
@@ -50,10 +59,11 @@ const renderWithProviders = (ui: React.ReactElement) => render(
 
 describe("EmailMfaPage", () => {
   const push = jest.fn();
+  const replace = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (useRouter as jest.Mock).mockReturnValue({ push });
+    (useRouter as jest.Mock).mockReturnValue({ push, replace });
   });
 
   function mockAuthMfaMutation({ isLoading = false, result = {} } = {}) {
@@ -89,6 +99,7 @@ describe("EmailMfaPage", () => {
     });
     expect(screen.getByText(/please check your messages/i)).toBeInTheDocument();
     expect(screen.getAllByLabelText(/digit/i)).toHaveLength(6);
+    // The component renders apiMessage from the API response
     expect(screen.getByText(/Test MFA sent/i)).toBeInTheDocument();
   });
 
@@ -147,18 +158,18 @@ describe("EmailMfaPage", () => {
       for (let idx = 0; idx < 6; idx++) {
         fireEvent.change(screen.getAllByLabelText(/digit/i)[idx], { target: { value: "2" } });
       }
-      
+
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: /verify/i }));
       });
-      
+
       if (attempt < 3) {
         await waitFor(() => {
           expect(screen.getByText(/Invalid code/)).toBeInTheDocument();
         }, { timeout: 3000 });
       }
     }
-    
+
     await waitFor(() => {
       expect(screen.getByText(/Too many failed tries/)).toBeInTheDocument();
     }, { timeout: 3000 });
@@ -196,11 +207,11 @@ describe("EmailMfaPage", () => {
       for (let idx = 0; idx < 6; idx++) {
         fireEvent.change(screen.getAllByLabelText(/digit/i)[idx], { target: { value: "3" } });
       }
-      
+
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: /verify/i }));
       });
-      
+
       if (i < 3) {
         await waitFor(() => {
           expect(screen.getByText(/Invalid code/)).toBeInTheDocument();

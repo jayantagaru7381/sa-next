@@ -153,6 +153,6 @@ describe("ForgotPasswordPage", () => {
 
     // Verify it's clickable (it's an anchor tag styled as a button)
     expect(returnButton.tagName.toLowerCase()).toBe("a");
-    expect(returnButton.getAttribute("href")).toBe("/");
+    expect(returnButton.getAttribute("href")).toBe("/login");
   });
 });

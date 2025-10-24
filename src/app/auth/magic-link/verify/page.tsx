@@ -78,9 +78,7 @@ const MagicLinkVerifyPage: React.FC = (): JSX.Element => {
         return;
       }
 
-      if (shouldRedirect) {
-        router.push(redirectUrl!);
-      }
+      router.push("/dashboard");
     } catch (err: any) {
       console.error("Magic link verification error:", err);
       setIsMagicLinkExpired(true);

@@ -24,13 +24,14 @@ import Typography from "@mui/material/Typography";
 
 import { StartIcon } from "../../../../../assets/icons";
 import { formatTime } from "../../../../../utils/helper";
-import { handleTokenResponse } from "../../../../../utils/tokenManager";
 import { CODE_LENGTH, STORAGE_KEYS, TIMER_CONFIG } from "../../../../../utils/Constants";
-import { useTimer, useResendTimer, useLocalStorageState } from "../../../../../hooks/auth/index";
 import { useAuthMfaRegisterMutation, useMfaVerifyRegisterMutation } from "../../../../../store/authApi";
+import { useTimer, useResendTimer, useLocalStorageState, useTempTokenRoute } from "../../../../../hooks/auth/index";
 
 
 const SMSMfaPageContent: React.FC = (): JSX.Element => {
+  // Protect route - requires needs_mfa_setup state
+  const isAuthorized = useTempTokenRoute("needs_mfa_setup");
   const [authMfaRegister, { isLoading: isAuthMfaRegisterLoading }] = useAuthMfaRegisterMutation();
   const [mfaVerifyRegister, { isLoading: isMfaVerifyRegisterLoading }] = useMfaVerifyRegisterMutation();
   const searchParams = useSearchParams();
@@ -185,19 +186,8 @@ const SMSMfaPageContent: React.FC = (): JSX.Element => {
       },
       ).unwrap();
 
-      // Handle token response if verification is successful
-      if (response.result === "success" && (response.session_token || response.temp_token)) {
-        const { shouldRedirect, redirectUrl } = await handleTokenResponse(
-          response
-        );
-        if (shouldRedirect) {
-          router.push(redirectUrl!);
-          return;
-        }
-      }
-      // Check if verification was successful (for cases without tokens)
+      // Verification successful - redirect to dashboard
       if (response.success || response.verified || response.result === "success") {
-        // Clear any existing errors
         setError(null);
         setFailedAttempts(0);
         setShowTooManyTries(false);
@@ -441,8 +431,8 @@ const SMSMfaPageContent: React.FC = (): JSX.Element => {
                 color: "text.primary",
               }}
             >
-              {isAuthMfaRegisterLoading 
-                ? "Sending..." 
+              {isAuthMfaRegisterLoading
+                ? "Sending..."
                 : resendTimer.resendTimer > 0
                   ? `Resend in ${formatTime(resendTimer.resendTimer)}`
                   : "Resend code"}

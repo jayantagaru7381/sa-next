@@ -1,7 +1,9 @@
 "use client";
 
+import type { JSX, FormEvent, KeyboardEvent } from "react";
+
 import { useRouter } from "next/navigation";
-import React, { useRef, type JSX, Suspense, useState, type FormEvent, type KeyboardEvent } from "react";
+import React, { useRef, Suspense, useState } from "react";
 
 import Box from "@mui/material/Box";
 import Alert from "@mui/material/Alert";
@@ -10,12 +12,14 @@ import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
+import { useTempTokenRoute } from "../../../../../hooks";
 import { CODE_LENGTH } from "../../../../../utils/Constants";
 import { useMfaVerifyMutation } from "../../../../../store/authApi";
 import ProgressBar from "../../../../../components/common/ProgressBar";
-import { handleTokenResponse } from "../../../../../utils/tokenManager";
 
 const AuthenticatorMfaPageContent: React.FC = (): JSX.Element => {
+  // Protect route - requires needs_mfa_auth or needs_email_verify state
+  useTempTokenRoute(["needs_mfa_auth", "needs_email_verify"]);
   const [mfaVerify, { isLoading: isMfaVerifyLoading }] = useMfaVerifyMutation();
   const [code, setCode] = useState<string[]>(Array(CODE_LENGTH).fill(""));
   const [error, setError] = useState<string | null>(null);
@@ -85,16 +89,8 @@ const AuthenticatorMfaPageContent: React.FC = (): JSX.Element => {
         mode: 'authenticator_app'
       }).unwrap();
 
-      // Handle token response if verification is successful
-      if (result.result === "success" && (result.session_token || result.temp_token)) {
-        const { shouldRedirect, redirectUrl } = await handleTokenResponse(result);
-        if (shouldRedirect) {
-          router.push(redirectUrl!);
-          return;
-        }
-      }
-
-      if (result.success || result.verified) {
+      // Verification successful - redirect to dashboard
+      if (result.success || result.verified || result.result === "success") {
         setError(null);
         setFailedAttempts(0);
         setShowTooManyTries(false);

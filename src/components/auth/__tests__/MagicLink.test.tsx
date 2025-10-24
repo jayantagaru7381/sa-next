@@ -175,7 +175,7 @@ describe('MagicLink', () => {
       renderWithTheme(<MagicLink />);
       const returnButton = screen.getByText('Return to login');
       fireEvent.click(returnButton);
-      expect(mockRouter.push).toHaveBeenCalledWith('/');
+      expect(mockRouter.push).toHaveBeenCalledWith('/login');
     });
   });
 

@@ -146,7 +146,7 @@ function ForgotPasswordPageInner() {
               }
               fullWidth
               sx={{ textTransform: "none", fontWeight: 500 }}
-              href="/"
+              href="/login"
               disabled={isLoading}
             >
               &nbsp; Return to login

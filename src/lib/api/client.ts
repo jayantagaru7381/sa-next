@@ -61,6 +61,7 @@ async function fetchWrapper<T = any>(
   try {
     const defaultOptions: RequestInit = {
       headers: getDefaultHeaders(),
+      credentials: "include", // Always send cookies
     };
 
     const mergedOptions = {
@@ -70,6 +71,7 @@ async function fetchWrapper<T = any>(
         ...defaultOptions.headers,
         ...options.headers,
       },
+      credentials: options.credentials || defaultOptions.credentials,
     };
 
     logApiCall(options.method || "GET", fullUrl, mergedOptions);
@@ -109,40 +111,15 @@ async function fetchWrapper<T = any>(
   }
 }
 
-// Enhanced API Client with authentication support
+/**
+ * API Client - Cookie-based authentication
+ * All requests automatically include cookies (sess, temp_sess, csrf)
+ * No token management required - middleware handles everything
+ */
 class ApiClient {
-  private authToken: string | null = null;
-
-  // Set authentication token
-  setAuthToken(token: string | null): void {
-    this.authToken = token;
-  }
-
-  // Get authentication token
-  getAuthToken(): string | null {
-    return this.authToken;
-  }
-
-  // Create authenticated request options
-  private createAuthenticatedOptions(options: RequestInit = {}): RequestInit {
-    const headers = { ...options.headers };
-
-    if (this.authToken) {
-      (headers as any).Authorization = `Bearer ${this.authToken}`;
-    }
-
-    return {
-      ...options,
-      headers,
-    };
-  }
-
   // GET request
   get<T = any>(url: string, options?: RequestInit): Promise<ApiResponse<T>> {
-    return fetchWrapper<T>(
-      url,
-      this.createAuthenticatedOptions({ ...options, method: "GET" }),
-    );
+    return fetchWrapper<T>(url, { ...options, method: "GET" });
   }
 
   // POST request
@@ -151,14 +128,11 @@ class ApiClient {
     body?: any,
     options?: RequestInit,
   ): Promise<ApiResponse<T>> {
-    return fetchWrapper<T>(
-      url,
-      this.createAuthenticatedOptions({
-        ...options,
-        method: "POST",
-        body: body ? JSON.stringify(body) : undefined,
-      }),
-    );
+    return fetchWrapper<T>(url, {
+      ...options,
+      method: "POST",
+      body: body ? JSON.stringify(body) : undefined,
+    });
   }
 
   // PUT request
@@ -167,14 +141,11 @@ class ApiClient {
     body?: any,
     options?: RequestInit,
   ): Promise<ApiResponse<T>> {
-    return fetchWrapper<T>(
-      url,
-      this.createAuthenticatedOptions({
-        ...options,
-        method: "PUT",
-        body: body ? JSON.stringify(body) : undefined,
-      }),
-    );
+    return fetchWrapper<T>(url, {
+      ...options,
+      method: "PUT",
+      body: body ? JSON.stringify(body) : undefined,
+    });
   }
 
   // PATCH request
@@ -183,29 +154,16 @@ class ApiClient {
     body?: any,
     options?: RequestInit,
   ): Promise<ApiResponse<T>> {
-    return fetchWrapper<T>(
-      url,
-      this.createAuthenticatedOptions({
-        ...options,
-        method: "PATCH",
-        body: body ? JSON.stringify(body) : undefined,
-      }),
-    );
+    return fetchWrapper<T>(url, {
+      ...options,
+      method: "PATCH",
+      body: body ? JSON.stringify(body) : undefined,
+    });
   }
 
   // DELETE request
   delete<T = any>(url: string, options?: RequestInit): Promise<ApiResponse<T>> {
-    return fetchWrapper<T>(
-      url,
-      this.createAuthenticatedOptions({ ...options, method: "DELETE" }),
-    );
-  }
-
-  // Convenience method for authenticated requests
-  withAuth(token: string) {
-    const authenticatedClient = new ApiClient();
-    authenticatedClient.setAuthToken(token);
-    return authenticatedClient;
+    return fetchWrapper<T>(url, { ...options, method: "DELETE" });
   }
 
   // Upload file
@@ -217,28 +175,25 @@ class ApiClient {
     const formData = new FormData();
     formData.append("file", file);
 
-    return fetchWrapper<T>(
-      url,
-      this.createAuthenticatedOptions({
-        ...options,
-        method: "POST",
-        body: formData,
-        headers: {
-          // Don't set Content-Type, let browser set it with boundary for FormData
-          ...((options?.headers as any) || {}),
-          "Content-Type": undefined,
-        },
-      }),
-    );
+    return fetchWrapper<T>(url, {
+      ...options,
+      method: "POST",
+      body: formData,
+      headers: {
+        // Don't set Content-Type, let browser set it with boundary for FormData
+        ...((options?.headers as any) || {}),
+        "Content-Type": undefined,
+      },
+    });
   }
 
   // Download file
   async download(url: string, options?: RequestInit): Promise<Blob> {
     const fullUrl = `${API_CONFIG.baseURL}${url}`;
-    const response = await fetch(
-      fullUrl,
-      this.createAuthenticatedOptions(options),
-    );
+    const response = await fetch(fullUrl, {
+      ...options,
+      credentials: "include",
+    });
 
     if (!response.ok) {
       throw new Error(`Download failed: ${response.statusText}`);

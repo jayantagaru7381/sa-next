@@ -180,13 +180,7 @@ describe('Authenticate Authenticator MFA Verification Page', () => {
     });
   });
 
-  it('handles token response with redirect', async () => {
-    const mockHandleTokenResponse = jest.mocked(handleTokenResponse);
-    mockHandleTokenResponse.mockResolvedValueOnce({
-      shouldRedirect: true,
-      redirectUrl: '/custom-redirect'
-    });
-
+  it('redirects to dashboard on successful verification', async () => {
     mockMfaVerify.mockReturnValue({
       unwrap: jest.fn().mockResolvedValue({
         result: "success",
@@ -205,7 +199,7 @@ describe('Authenticate Authenticator MFA Verification Page', () => {
     fireEvent.click(verifyButton);
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith('/custom-redirect');
+      expect(mockPush).toHaveBeenCalledWith('/dashboard');
     });
   });
 

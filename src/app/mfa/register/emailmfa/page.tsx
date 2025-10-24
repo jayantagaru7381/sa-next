@@ -1,7 +1,9 @@
 "use client";
 
+import type { JSX, FormEvent, KeyboardEvent } from "react";
+
 import { useRouter } from "next/navigation";
-import React, { useRef, type JSX, useState, useEffect, type FormEvent, type KeyboardEvent } from "react";
+import React, { useRef, useState, useEffect } from "react";
 
 import Box from "@mui/material/Box";
 import Alert from "@mui/material/Alert";
@@ -10,12 +12,14 @@ import Skeleton from "@mui/material/Skeleton";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
+import { useTempTokenRoute } from "../../../../hooks";
 import { CODE_LENGTH } from "../../../../utils/Constants";
 import { StartIcon, LeftArrowIcon } from "../../../../assets/icons";
-import { handleTokenResponse } from "../../../../utils/tokenManager";
 import { useAuthMfaRegisterMutation, useMfaVerifyRegisterMutation } from "../../../../store/authApi";
 
 const EmailMfaPage: React.FC = (): JSX.Element => {
+  // Protect route - requires needs_mfa_setup state
+  const isAuthorized = useTempTokenRoute("needs_mfa_setup");
   const [authMfaRegister, { isLoading: isAuthMfaRegisterLoading }] = useAuthMfaRegisterMutation();
   const [mfaVerifyRegister, { isLoading: isMfaVerifyRegisterLoading }] = useMfaVerifyRegisterMutation();
   const [code, setCode] = useState<string[]>(Array(CODE_LENGTH).fill(""));
@@ -28,6 +32,11 @@ const EmailMfaPage: React.FC = (): JSX.Element => {
   const hasRequestedOnLoadRef = useRef(false);
   const router = useRouter();
   useEffect(() => {
+    // Only initiate MFA if authorized (has correct auth_state cookie)
+    if (!isAuthorized) {
+      return;
+    }
+
     // Prevent multiple calls using useRef
     if (hasRequestedOnLoadRef.current) {
       return;
@@ -52,7 +61,7 @@ const EmailMfaPage: React.FC = (): JSX.Element => {
     };
 
     initiateEmailMfaRegistration();
-  }, []);
+  }, [isAuthorized, authMfaRegister]);
 
   // Start a single interval on mount to decrement the timer every second.
   // This avoids re-creating intervals when `timer` changes which can lead to
@@ -133,16 +142,7 @@ const EmailMfaPage: React.FC = (): JSX.Element => {
       },
       ).unwrap();
 
-      if (response.result === "success" && (response.session_token || response.temp_token)) {
-        const { shouldRedirect, redirectUrl } = await handleTokenResponse(
-          response
-        );
-        if (shouldRedirect) {
-          router.push(redirectUrl!);
-          return;
-        }
-      }
-
+      // Verification successful - redirect to dashboard
       if (response.success || response.verified || response.result === "success") {
         setError(null);
         setFailedAttempts(0);

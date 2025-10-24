@@ -6,6 +6,7 @@ export const colors = {
   secondary: {
     main: "#F57C00",
     background: "rgba(255,152,0,0.16)",
+    invitedBackground: "rgba(255,152,0,0.16)",
   },
   gray: {
     50: "#F4F6F8",

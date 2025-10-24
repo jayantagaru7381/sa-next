@@ -50,20 +50,22 @@ jest.mock("../../../../../hooks/auth/index", () => ({
   useTimer: jest.fn(() => mockMainTimer),
   useResendTimer: jest.fn(() => mockResendTimer),
   useLocalStorageState: jest.fn(() => mockLocalStorageState),
+  useTempTokenRoute: jest.fn(() => true), // Mock to return true for tests
 }));
 
 describe("SMSMfaPage", () => {
   const mockPush = jest.fn();
+  const mockReplace = jest.fn();
   const mockAuthMfa = jest.fn();
   const mockMfaVerify = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (useRouter as jest.Mock).mockReturnValue({ push: mockPush });
+    (useRouter as jest.Mock).mockReturnValue({ push: mockPush, replace: mockReplace });
     (useSearchParams as jest.Mock).mockReturnValue({ get: (key: string) => (key === 'phone' ? '+3212345678' : null) });
     (useAuthMfaMutation as jest.Mock).mockReturnValue([mockAuthMfa, { isLoading: false }]);
     (useMfaVerifyMutation as jest.Mock).mockReturnValue([mockMfaVerify, { isLoading: false }]);
-    
+
     // Reset timer mocks
     mockMainTimer.timer = 600;
     mockMainTimer.getRemainingTime.mockReturnValue(0);
@@ -85,6 +87,7 @@ describe("SMSMfaPage", () => {
     });
     await act(async () => render(<SMSMfaPage />));
     expect(await screen.findByText(/please check your messages/i)).toBeInTheDocument();
+    // The component renders apiMessage from the API response
     expect(screen.getByText(/SMS sent to your phone/i)).toBeInTheDocument();
   });
 
@@ -93,6 +96,7 @@ describe("SMSMfaPage", () => {
       unwrap: jest.fn().mockRejectedValue(new Error("Network error")),
     });
     await act(async () => render(<SMSMfaPage />));
+    // The component shows the error message from the catch block
     expect(await screen.findByText(/failed to send verification sms/i)).toBeInTheDocument();
   });
 
@@ -100,22 +104,22 @@ describe("SMSMfaPage", () => {
     mockAuthMfa.mockReturnValue({
       unwrap: jest.fn().mockResolvedValue({ message: "Message sent" }),
     });
-    
+
     // Temporarily use real timer hook for this test
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const authHooks = require("../../../../../hooks/auth/index");
     const realUseTimer = jest.requireActual("../../../../../hooks/auth/index").useTimer;
     authHooks.useTimer = realUseTimer;
-    
+
     jest.useFakeTimers();
     await act(async () => render(<SMSMfaPage />));
     expect(screen.getByText("10:00")).toBeInTheDocument();
-    
+
     act(() => jest.advanceTimersByTime(1000));
-    
+
     expect(screen.getByText("09:59")).toBeInTheDocument();
     jest.useRealTimers();
-    
+
     // Restore mock
     authHooks.useTimer = jest.fn(() => mockMainTimer);
   });
@@ -171,11 +175,11 @@ describe("SMSMfaPage", () => {
 
     for (let i = 0; i < 4; i++) {
       screen.getAllByLabelText(/digit/i).forEach((input) => fireEvent.change(input, { target: { value: "1" } }));
-      
+
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: /verify/i }));
       });
-      
+
       if (i < 3) {
         await waitFor(() => {
           expect(screen.getByText(/invalid code/i)).toBeInTheDocument();
@@ -186,7 +190,7 @@ describe("SMSMfaPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/too many failed tries/i)).toBeInTheDocument();
     }, { timeout: 3000 });
-    expect(screen.getByRole("button", { name: /contact support/i})).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /contact support/i })).toBeInTheDocument();
   }, 15000);
 
   test("resend button triggers re-sending MFA code", async () => {

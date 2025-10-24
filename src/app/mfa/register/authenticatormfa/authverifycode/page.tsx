@@ -1,7 +1,9 @@
 "use client";
 
+import type { JSX, FormEvent, KeyboardEvent } from "react";
+
 import { useRouter } from "next/navigation";
-import React, { useRef, type JSX, useState, type FormEvent, type KeyboardEvent } from "react";
+import React, { useRef, useState } from "react";
 
 import Box from "@mui/material/Box";
 import Alert from "@mui/material/Alert";
@@ -12,7 +14,6 @@ import Typography from "@mui/material/Typography";
 
 import { CODE_LENGTH } from "../../../../../utils/Constants";
 import ProgressBar from "../../../../../components/common/ProgressBar";
-import { handleTokenResponse } from "../../../../../utils/tokenManager";
 import { useMfaVerifyRegisterMutation } from "../../../../../store/authApi";
 
 const AuthenticatorMfaPageContent: React.FC = (): JSX.Element => {
@@ -85,17 +86,8 @@ const AuthenticatorMfaPageContent: React.FC = (): JSX.Element => {
       },
       ).unwrap();
 
-      if (response.result === "success" && (response.session_token || response.temp_token)) {
-        const { shouldRedirect, redirectUrl } = await handleTokenResponse(
-          response
-        );
-        if (shouldRedirect) {
-          router.push(redirectUrl!);
-          return;
-        }
-      }
-
-      if (response.success || response.verified) {
+      // Verification successful - redirect to dashboard
+      if (response.success || response.verified || response.result === "success") {
         setError(null);
         setFailedAttempts(0);
         setShowTooManyTries(false);

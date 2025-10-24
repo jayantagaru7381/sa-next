@@ -10,11 +10,14 @@ import { Box, Stack, Button, Divider, Skeleton, Typography } from "@mui/material
 
 import ProgressBar from "src/components/common/ProgressBar";
 
+import { useTempTokenRoute } from "../../../../../hooks";
 import { useAuthMfaRegisterMutation } from "../../../../../store/authApi";
 
 const QRCode = dynamic(() => import("react-qr-code"), { ssr: false });
 
 const AuthenticatorSetupStep: React.FC = (): JSX.Element => {
+  // Protect route - requires needs_mfa_setup state
+  const isAuthorized = useTempTokenRoute("needs_mfa_setup");
   const [authMfaRegister, { isLoading }] = useAuthMfaRegisterMutation();
   const [uri, setUri] = useState("");
   const [secret, setSecret] = useState("");
@@ -41,8 +44,12 @@ const AuthenticatorSetupStep: React.FC = (): JSX.Element => {
     }
   }
   useEffect(() => {
+    // Only initiate MFA if authorized (has correct auth_state cookie)
+    if (!isAuthorized) {
+      return;
+    }
     init()
-  }, []);
+  }, [isAuthorized]);
 
   return (
     <Box

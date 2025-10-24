@@ -20,23 +20,3 @@ export const STORAGE_KEYS: Record<string, string> = {
 } as const;
 
 export const CODE_LENGTH: number = 6;
-
-export const EXCLUDE_AUTH_ENDPOINTS: string[] = ["forgotPassword", "resetPassword"];
-// Endpoints requiring X-Temp-Token
-export const TEMP_TOKEN_ENDPOINTS = new Set<string>([
-    // Email verification (if added to this slice)
-    "verifyEmail",
-    "resendVerification",
-    // MFA authenticate
-    "authMfa",
-    "mfaVerify",
-    // MFA register
-    "authMfaRegister",
-    "mfaVerifyRegister",
-]);
-// Endpoints requiring X-Session-Token
-export const SESSION_TOKEN_ENDPOINTS = new Set<string>([
-    "logout",
-    "profile",
-    "validatePasswordLink",
-]);

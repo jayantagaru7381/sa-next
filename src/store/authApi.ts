@@ -1,32 +1,36 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 
+import { clearAllTokens } from "src/utils/tokenManager";
+
 import { resetPasswordURL, forgotPasswordURL } from "../utils/urls-list";
-import { TEMP_TOKEN_ENDPOINTS, EXCLUDE_AUTH_ENDPOINTS, SESSION_TOKEN_ENDPOINTS } from "../utils/Constants";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE;
 
+/**
+ * Auth API - Cookie-based authentication
+ * All authentication is handled via httpOnly cookies (sess, temp_sess, csrf)
+ * No tokens are stored in localStorage or sessionStorage
+ * Middleware automatically manages cookie forwarding
+ */
 export const authApi = createApi({
   reducerPath: "authApi",
   baseQuery: fetchBaseQuery({
     baseUrl: `${API_BASE}`,
-    prepareHeaders: (headers, { endpoint }) => {
+    credentials: "include", // Always send cookies with requests
+    prepareHeaders: (headers) => {
       headers.set("Content-Type", "application/json");
-      console.log("Preparing headers for endpoint:", endpoint);
-      // Exclude password flows
-      if (EXCLUDE_AUTH_ENDPOINTS.includes(endpoint)) {
-        return headers;
-      }
+
+      // Add CSRF token from cookie for all requests
       if (typeof window !== "undefined") {
-        if (TEMP_TOKEN_ENDPOINTS.has(endpoint)) {
-          const tempToken = sessionStorage.getItem("tempToken");
-          if (tempToken) headers.set("X-Temp-Token", tempToken);
-        }
-        if (SESSION_TOKEN_ENDPOINTS.has(endpoint)) {
-          const sessionToken = localStorage.getItem("sessionToken");
-          console.log("sessionToken", sessionToken);
-          if (sessionToken) headers.set("X-Session-Token", sessionToken);
+        const csrfToken = document.cookie
+          .split("; ")
+          .find((row) => row.startsWith("csrf="))
+          ?.split("=")[1];
+        if (csrfToken) {
+          headers.set("X-CSRF-Token", csrfToken);
         }
       }
+
       return headers;
     },
   }),
@@ -34,14 +38,12 @@ export const authApi = createApi({
     login: builder.query({
       query: () => ({
         url: `/auth/entra/login`,
-        credentials: "include",
       }),
     }),
     nativeLogin: builder.mutation({
       query: (payload) => ({
         url: `/auth/native/login`,
         method: "POST",
-        credentials: "include",
         body: payload,
       }),
     }),
@@ -50,8 +52,17 @@ export const authApi = createApi({
       query: () => ({
         url: `/auth/native/logout`,
         method: "POST",
-        credentials: "include",
       }),
+      async onQueryStarted(arg, { queryFulfilled }) {
+        try {
+          await queryFulfilled;
+          clearAllTokens(); // <-- Clear tokens after successful logout
+        } catch (logoutError) {
+          clearAllTokens(); // <-- Clear tokens even after unsuccessful logout
+          // Optionally handle error
+          // console.error("Logout failed:", logoutError);
+        }
+      },
     }),
 
     forgotPassword: builder.mutation({
@@ -88,7 +99,6 @@ export const authApi = createApi({
         url: `/auth/entra/callback`,
         method: "POST",
         body: payload,
-        credentials: "include",
       }),
     }),
     authMfa: builder.mutation({
@@ -96,7 +106,6 @@ export const authApi = createApi({
         url: `/auth/mfa/authenticate/${mode}/initiate`,
         method: "POST",
         body: payload,
-        credentials: "include",
       }),
     }),
     mfaVerify: builder.mutation({
@@ -104,7 +113,6 @@ export const authApi = createApi({
         url: `/auth/mfa/authenticate/${mode}/verify`,
         method: "POST",
         body: payload,
-        credentials: "include",
       }),
     }),
     authMfaRegister: builder.mutation({
@@ -112,7 +120,6 @@ export const authApi = createApi({
         url: `/auth/mfa/register/${mode}/initiate`,
         method: "POST",
         body: payload,
-        credentials: "include",
       }),
     }),
     mfaVerifyRegister: builder.mutation({
@@ -120,7 +127,14 @@ export const authApi = createApi({
         url: `/auth/mfa/register/${mode}/verify`,
         method: "POST",
         body: payload,
-        credentials: "include",
+      }),
+    }),
+
+    // Get user profile (uses session cookie)
+    getProfile: builder.query({
+      query: () => ({
+        url: `/auth/native/profile`,
+        method: "GET",
       }),
     }),
     validatePasswordLink: builder.mutation({
@@ -146,5 +160,7 @@ export const {
   useMfaVerifyMutation,
   useAuthMfaRegisterMutation,
   useMfaVerifyRegisterMutation,
-  useValidatePasswordLinkMutation,
+  useLazyGetProfileQuery,
+  useGetProfileQuery,
+  useValidatePasswordLinkMutation
 } = authApi;

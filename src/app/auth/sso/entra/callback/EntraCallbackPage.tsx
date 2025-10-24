@@ -8,7 +8,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { Box, Alert, Button, Typography, CircularProgress } from "@mui/material";
 
-import { handleTokenResponse } from "../../../../../utils/tokenManager";
 import { useAuthEntraCallbackMutation } from "../../../../../store/authApi";
 
 const EntraCallbackPage: React.FC = (): JSX.Element => {
@@ -41,8 +40,8 @@ const EntraCallbackPage: React.FC = (): JSX.Element => {
         ).unwrap();
 
         const data: LoginResponse = res;
-        const { shouldRedirect, redirectUrl } = await handleTokenResponse(data);
 
+        // Handle different auth flow responses
         if (data.result === "mfa_setup_required") {
           router.push(`/mfa/register`);
           return;
@@ -68,9 +67,8 @@ const EntraCallbackPage: React.FC = (): JSX.Element => {
           return;
         }
 
-        if (shouldRedirect) {
-          router.push(redirectUrl!);
-        }
+        // Success - redirect to dashboard
+        router.push("/dashboard");
       } catch (e: any) {
         setError(e?.message || "Authentication failed.");
       }
@@ -81,7 +79,7 @@ const EntraCallbackPage: React.FC = (): JSX.Element => {
     return (
       <Box sx={{ p: 4, maxWidth: 440, mx: "auto", display: "grid", gap: 2 }}>
         <Alert severity="error">{error}</Alert>
-        <Button variant="outlined" onClick={() => router.replace("/")}>
+        <Button variant="outlined" onClick={() => router.replace("/login")}>
           Back to sign in
         </Button>
       </Box>

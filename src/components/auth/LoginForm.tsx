@@ -1,7 +1,7 @@
 "use client";
 
+import type { LoginRequest, LoginFormProps } from "../../types/auth";
 import type { LoginFormData, LoginFormErrors } from "./validateLoginForm";
-import type { LoginRequest, LoginResponse, LoginFormProps } from "../../types/auth";
 
 import Image from "next/image";
 import * as React from "react";
@@ -24,7 +24,6 @@ import InputAdornment from "@mui/material/InputAdornment";
 import CircularProgress from "@mui/material/CircularProgress";
 
 import { validateLoginForm } from "./validateLoginForm";
-import { handleTokenResponse } from "../../utils/tokenManager";
 import { EyeIcon, DangerIcon, EyeOffIcon, ShieldIcon } from "../../assets/icons";
 import {
   useLazyLoginQuery,
@@ -35,7 +34,7 @@ import {
 const LoginForm = ({ showPasswordField, setShowPasswordField, successMessage }: LoginFormProps) => {
   const [magicklink] = useMagickLinkMutation();
   const [login, { isLoading: ssoLoading }] = useLazyLoginQuery();
-  const [nativeLogin, { isLoading: nativeLoginLoading, error: nativeLoginError }] =
+  const [nativeLogin, { isLoading: nativeLoginLoading }] =
     useNativeLoginMutation();
   const [formData, setFormData] = useState<LoginFormData>({
     email: "",
@@ -44,6 +43,7 @@ const LoginForm = ({ showPasswordField, setShowPasswordField, successMessage }: 
   const [errors, setErrors] = useState<LoginFormErrors>({});
   const [showPassword, setShowPassword] = useState(false);
   const router = useRouter();
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     const sanitizedValue =
@@ -110,41 +110,6 @@ const LoginForm = ({ showPasswordField, setShowPasswordField, successMessage }: 
     setErrors((prev) => ({ ...prev, login: undefined }));
   };
 
-  // Exported for test coverage
-  const handleEnrolledRoutes = (response: LoginResponse) => {
-    const { result, details = {} } = response;
-    const { enrolled_methods: enrolledMethods = [] } = details;
-
-    switch (result) {
-      case "mfa_setup_required": {
-        router.push("/mfa/register");
-        break;
-      }
-
-      case "mfa_auth_required": {
-        const firstMethod = enrolledMethods[0];
-        const routeMap: Record<string, string> = {
-          totp: "/mfa/authenticate/authenticatormfa/authverifycode",
-          phone_otp: "/mfa/authenticate/smsmfa/codecheck",
-          email_otp: "/mfa/authenticate/emailmfa",
-        };
-        const route = routeMap[firstMethod];
-        if (route) router.push(route);
-        break;
-      }
-
-      case "email_verification_required": {
-        router.push("/mfa/authenticate/emailmfa/codecheck");
-        break;
-      }
-
-      default: {
-        // Handle unexpected result values
-        console.warn("Unexpected login result:", result);
-        break;
-      }
-    }
-  };
   const submitLoginForm = async () => {
     const validationErrors = validateLoginForm({
       ...formData,
@@ -158,15 +123,15 @@ const LoginForm = ({ showPasswordField, setShowPasswordField, successMessage }: 
         username: formData.email.trim(),
         password: formData.password.trim(),
       };
-      const res: LoginResponse = await nativeLogin(JSON.stringify(payload)).unwrap();
+      await nativeLogin(JSON.stringify(payload)).unwrap();
 
-      const { shouldRedirect, redirectUrl } = await handleTokenResponse(res);
-      if (!res?.result) return;
-      handleEnrolledRoutes(res);
-      // Final fallback redirect
-      if (shouldRedirect) {
-        router.push(redirectUrl!);
-      }
+      // Use server navigation to trigger middleware
+      // Middleware will check auth_state cookie and redirect to appropriate flow:
+      // - auth_state="authenticated" → dashboard
+      // - auth_state="needs_mfa_auth" → MFA authentication page
+      // - auth_state="needs_mfa_setup" → MFA registration page
+      // - auth_state="needs_email_verify" → email verification page
+      window.location.href = "/dashboard";
     } catch (error: any) {
       setErrors({
         login: error?.data?.detail

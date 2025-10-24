@@ -8,7 +8,7 @@ export default function Header() {
     <header className="sticky top-0 z-50 flex justify-between items-center w-full h-[4.5rem] px-3 mx-auto select-none bg-[#F4F6F8]">
       <div className="flex items-center justify-center h-full">
         {/* Wrap the Image with a Link for navigation */}
-        <Link href="/">
+        <Link href="/login">
           <Image
             src="/singleprimary.svg"
             alt="Source Advisors logo"

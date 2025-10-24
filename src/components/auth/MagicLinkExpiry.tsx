@@ -19,7 +19,7 @@ export default function MagicLinkExpiry({ email }: MagicLinkExpiryProps) {
 
     const handleGoToLogin = () => {
         // Navigate to the login page
-        router.push('/');
+        router.push('/login');
     };
 
     return (

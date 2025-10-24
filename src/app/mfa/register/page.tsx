@@ -14,9 +14,12 @@ import {
   FormControl,
 } from "@mui/material";
 
+import { useTempTokenRoute } from "../../../hooks";
 import { SmsIcon, EmailIcon } from "../../../assets/icons";
 
 export default function Page() {
+  // Protect route - requires needs_mfa_setup state
+  useTempTokenRoute("needs_mfa_setup");
   const [method, setMethod] = useState<string>("");
   const router = useRouter();
 

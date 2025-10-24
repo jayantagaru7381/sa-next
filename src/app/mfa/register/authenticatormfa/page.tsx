@@ -15,7 +15,11 @@ import { LeftArrowIcon } from "src/assets/icons";
 
 import ProgressBar from "src/components/common/ProgressBar";
 
+import { useTempTokenRoute } from "../../../../hooks";
+
 const AuthenticatorDownloadStep: React.FC = (): JSX.Element => {
+  // Protect route - requires needs_mfa_setup state
+  useTempTokenRoute("needs_mfa_setup");
   const router = useRouter();
 
   return (

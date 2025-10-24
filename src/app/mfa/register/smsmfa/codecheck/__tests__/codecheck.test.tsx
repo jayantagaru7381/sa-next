@@ -25,6 +25,8 @@ jest.mock(
   () => ({ StartIcon: () => <span data-testid="start-icon">icon</span> })
 );
 
+// useTempTokenRoute is mocked globally in jest.setup.ts
+
 // Mock timer hooks
 const mockMainTimer = {
   timer: 600,
@@ -55,6 +57,7 @@ jest.mock("../../../../../../hooks/auth/index", () => ({
   useTimer: jest.fn(() => mockMainTimer),
   useResendTimer: jest.fn(() => mockResendTimer),
   useLocalStorageState: jest.fn(() => mockLocalStorageState),
+  useTempTokenRoute: jest.fn(() => true), // Mock to return true for tests
 }));
 
 jest.mock("../../../../../../utils/helper", () => ({
@@ -88,13 +91,14 @@ const renderWithProviders = (ui: React.ReactElement) => render(
 
 describe("SMSMfaPage", () => {
   const push = jest.fn();
+  const replace = jest.fn();
 
   const mockAuthMfaRegister = jest.fn();
   const mockMfaVerifyRegister = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (useRouter as jest.Mock).mockReturnValue({ push });
+    (useRouter as jest.Mock).mockReturnValue({ push, replace });
     // Always provide correct return value tuple for both mutations
     (useAuthMfaRegisterMutation as jest.Mock)
       .mockReturnValue([mockAuthMfaRegister, { isLoading: false }]);
